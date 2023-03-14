@@ -1,4 +1,4 @@
-from QuantGYMM.descriptors import *
+from ..descriptors import *
 import pytest
 import pandas as pd
 import numpy as np

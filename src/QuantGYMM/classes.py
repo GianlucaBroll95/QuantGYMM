@@ -10,10 +10,12 @@ import scipy
 import re
 from pandas.tseries.offsets import DateOffset, BDay, MonthEnd
 from scipy.stats.distributions import norm
-from QuantGYMM.utils import business_adjustment, accrual_factor, number_of_month
+from .utils import business_adjustment, accrual_factor, number_of_month
 from scipy.optimize import minimize
-from QuantGYMM.descriptors import *
+from .descriptors import *
 
+__all__ = ["Schedule", "FloatingRateBond", "DiscountCurve", "SwapRateCurve", "EuriborCurve", "Pricer",
+           "BlackPricer", "BachelierPricer", "DisplacedBlackPricer", "VanillaSwap", "MertonSimulator"]
 
 # TODO: try to implement piecewise constant forward interpolation
 

@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from QuantGYMM.utils import is_target_holiday
+from ..utils import is_target_holiday
 
 
 @pytest.mark.parametrize("date, output", [(pd.to_datetime("2023-01-01"), True),
