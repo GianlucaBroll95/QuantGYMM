@@ -4,12 +4,13 @@ import numpy
 import numpy as np
 import pandas
 import pandas as pd
-from pandas.tseries.offsets import DateOffset, BDay, MonthEnd
+from pandas.tseries.offsets import DateOffset, BDay
 from .utils import business_adjustment, accrual_factor, number_of_month
 from scipy.optimize import minimize
 from .descriptors import *
 from .pricers import Pricer
 from .term_structures import DiscountCurve
+from .calendar import Schedule
 
 __all__ = ["FloatingRateBond", "VanillaSwap"]
 
