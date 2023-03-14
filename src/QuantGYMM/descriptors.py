@@ -2,6 +2,9 @@ import pandas
 import pandas as pd
 import datetime
 
+__all__ = ["Date", "PositiveNumber", "PositiveInteger", "NonNegativeInteger", "BusinessConvention", "Boolean",
+           "DayCountConvention", "FloatNumber", "String", "CompoundingConvention", "DataFrame"]
+
 
 class Date:
     def __init__(self, sterilize_attr=None):
@@ -73,7 +76,8 @@ class PositiveInteger:
         self.property_name = name
 
     def __set__(self, instance, value):
-        if ((isinstance(value, int) and value > 0) and not isinstance(value, bool)) or (value is None and self.none_accepted):
+        if ((isinstance(value, int) and value > 0) and not isinstance(value, bool)) or (
+                value is None and self.none_accepted):
             instance.__dict__[self.property_name] = value
         else:
             raise TypeError(f"Wrong type for '{value}'. Accepted types are positive integers.")
@@ -98,7 +102,8 @@ class NonNegativeInteger:
         self.property_name = name
 
     def __set__(self, instance, value):
-        if ((isinstance(value, int) and value >= 0) and not isinstance(value, bool)) or (value is None and self.none_accepted) :
+        if ((isinstance(value, int) and value >= 0) and not isinstance(value, bool)) or (
+                value is None and self.none_accepted):
             instance.__dict__[self.property_name] = value
         else:
             raise TypeError(f"Wrong type for '{value}'. Accepted types are non negative integers.")
