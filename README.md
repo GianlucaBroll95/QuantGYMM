@@ -23,7 +23,7 @@ conda install jupyter
 pip install QuantGYMM
 ```
 ### Alternative:
-1) you could clone the repository:
+1) You could clone the repository:
     
 ```
 git clone https://github.com/GianlucaBroll95/QuantGYMM.git
