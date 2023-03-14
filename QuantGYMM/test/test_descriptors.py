@@ -4,8 +4,6 @@ import pandas as pd
 import numpy as np
 
 
-# TODO: test of float number
-
 @pytest.fixture
 def instance_class():
     obj = type("TestClass", (), {"date": Date(),
