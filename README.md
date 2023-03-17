@@ -1,6 +1,6 @@
 # QuantGYMM
 
-This a simple package to deal with bond pricing and bond hedging. This project was born during the Group Assignment for the Fixed Income course in the MAFIRM at Collegio Carlo Alberto. It is a simple Python package that allows to fit term structures and perform bond pricing. Please see the documentation for further details.
+This a simple package to deal with bond pricing and bond hedging. This project was born during the Group Assignment for the Fixed Income course in the MAFIRM at Collegio Carlo Alberto. It is a simple Python package that allows to fit term structures and perform bond pricing. Please see the [documentation](https://github.com/GianlucaBroll95/QuantGYMM/blob/master/docs/index.md) for further details.
 
 ## Getting started
 
@@ -21,6 +21,10 @@ conda install jupyter
 3) Install QuantGYMM:
 ```
 pip install QuantGYMM
+```
+or (better):
+```
+python3 -m pip install QuantGYMM
 ```
 ### Alternative:
 1) You could clone the repository:
