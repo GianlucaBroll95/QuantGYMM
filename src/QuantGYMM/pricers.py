@@ -201,7 +201,6 @@ class BlackPricer(Pricer):
         return self._floor_fwd_premiums
 
     def _get_cap_floor_forward_premiums(self):
-        # TODO: check whether to use the same AF for coupon and caplet/floorlet. Rebus sic stantibus it uses the same
         # volatility for cap and floor:
         maturity = (self.bond.schedule.schedule["paymentDate"][-1] - self.bond.evaluation_date).days / 365
         interpolator = scipy.interpolate.RegularGridInterpolator(
@@ -282,7 +281,6 @@ class BachelierPricer(BlackPricer):
         self.volatility_surface = volatility_surface
 
     def _get_cap_floor_forward_premiums(self):
-        # TODO: check whether to use the same AF for coupon and caplet/floorlet. Rebus sic stantibus it uses the same
         # volatility for cap and floor:
         maturity = (self.bond.schedule.schedule["paymentDate"][-1] - self.bond.evaluation_date).days / 365
         interpolator = scipy.interpolate.RegularGridInterpolator(
@@ -330,8 +328,6 @@ class DisplacedBlackPricer(BlackPricer):
         self.shift = shift
 
     def _get_cap_floor_forward_premiums(self):
-        # TODO: check whether to use the same AF for coupon and caplet/floorlet. Rebus sic stantibus it uses the same
-
         cap_strike = self.shift + self.bond.cap
         floor_strike = self.shift + self.bond.floor
         # volatility for cap and floor:

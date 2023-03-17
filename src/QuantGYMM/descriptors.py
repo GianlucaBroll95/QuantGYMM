@@ -81,6 +81,9 @@ class PositiveInteger:
             instance.__dict__[self.property_name] = value
         else:
             raise TypeError(f"Wrong type for '{value}'. Accepted types are positive integers.")
+        if self.sterilize_attr:
+            for attr in self.sterilize_attr:
+                instance.__dict__[attr] = None
 
     def __get__(self, instance, owner):
         if instance is None:
@@ -107,6 +110,9 @@ class NonNegativeInteger:
             instance.__dict__[self.property_name] = value
         else:
             raise TypeError(f"Wrong type for '{value}'. Accepted types are non negative integers.")
+        if self.sterilize_attr:
+            for attr in self.sterilize_attr:
+                instance.__dict__[attr] = None
 
     def __get__(self, instance, owner):
         if instance is None:
@@ -274,8 +280,9 @@ class CompoundingConvention:
 
 
 class DataFrame:
-    def __init__(self, index_type=None, sterilize_attr=None):
+    def __init__(self, index_type=None, sterilize_attr=None, none_accepted=False):
         self.index_type = index_type
+        self.none_accepted = none_accepted
         if sterilize_attr is None:
             sterilize_attr = []
         self.sterilize_attr = sterilize_attr
@@ -293,6 +300,8 @@ class DataFrame:
                         f"'{value}' has not a {self.index_type}. Please provide a DataFrame with {self.index_type}.")
             else:
                 instance.__dict__[self.property_name] = value
+        elif value is None and self.none_accepted:
+            instance.__dict__[self.property_name] = value
         else:
             raise TypeError(f"Expected DataFrame, got {type(value)}.")
 

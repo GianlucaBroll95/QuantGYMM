@@ -15,8 +15,6 @@ from .calendar import Schedule
 __all__ = ["FloatingRateBond", "VanillaSwap"]
 
 
-# TODO: try to implement piecewise constant forward interpolation
-
 
 
 class FloatingRateBond:
@@ -37,9 +35,9 @@ class FloatingRateBond:
             dcc (str): day count convention
             face_amount (int | float): bond face amount
             fixing_days (int): number of days previous to reset date on the fixing of coupon rate occurs
-            spread (float): spread over the floating rate
-            floor (float): floor rate for the coupon
-            cap (float): cap rate for the coupon
+            spread (float): [optional] spread over the floating rate
+            floor (float): [optional] floor rate for the coupon
+            cap (float): [optional] cap rate for the coupon
         """
         self.dcc = dcc
         self.face_amount = face_amount

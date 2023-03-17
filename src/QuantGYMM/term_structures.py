@@ -1,3 +1,5 @@
+import pandas
+
 from .descriptors import *
 import numpy as np
 import pandas as pd
@@ -10,18 +12,19 @@ import re
 
 __all__ = ["SwapRateCurve", "DiscountCurve", "EuriborCurve"]
 
+
 class SwapRateCurve:
     """
     Swap rate curve object for handling swap rate.
     """
-    _SPOT_LEG = 2
+    _SPOT_LAG = 2
 
     convention = BusinessConvention(sterilize_attr=["_interpolated_rates"])
     dcc = DayCountConvention(sterilize_attr=["_interpolated_rates"])
     trade_date = Date(sterilize_attr=["_interpolated_rates"])
     frequency = PositiveNumber(sterilize_attr=["_interpolated_rates"])
 
-    def __init__(self, trade_date, swap_rate, frequency, convention="modified_following", dcc="30/360",
+    def __init__(self, swap_rate, trade_date, frequency, convention="modified_following", dcc="30/360",
                  interpolation="linear"):
         """
         Args:
@@ -41,8 +44,8 @@ class SwapRateCurve:
         self._interpolated_rates = None
 
     @property
-    def spot_leg(self):
-        return self._SPOT_LEG
+    def spot_lag(self):
+        return self._SPOT_LAG
 
     @property
     def swap_rates(self):
@@ -88,11 +91,8 @@ class SwapRateCurve:
         """
 
         days_in_term = np.array([d.days for d in self.swap_rates.term - self.swap_rates.term.iloc[0]])
-        try:
-            interpolating_function = scipy.interpolate.interp1d(days_in_term, self.swap_rates.swapRate,
-                                                                kind=self.interpolation)
-        except Exception:
-            raise ValueError(Exception)
+        interpolating_function = scipy.interpolate.interp1d(days_in_term, self.swap_rates.swapRate,
+                                                            kind=self.interpolation)
         date_to_interpolate = pd.Index(business_adjustment(self.convention,
                                                            pd.date_range(self.swap_rates.term.iloc[0],
                                                                          self.swap_rates.term.iloc[-1],
@@ -105,25 +105,19 @@ class SwapRateCurve:
             {"term": date_to_interpolate, "interpolatedSwapRate": interpolating_function(days_to_interpolate)})
 
     def _get_normalized_rate(self, swap_rate):
-        starting_date = self.trade_date + BDay(self.spot_leg)
+        if isinstance(swap_rate.index, pandas.DatetimeIndex):
+            if len(swap_rate.columns) != 1:
+                raise ValueError(f"Swap rate should be a DataFrame or a Series of one columns of swap rates."
+                                 f" Got {len(swap_rate.columns)} columns.")
+            return swap_rate
+        if not swap_rate.index.is_monotonic_increasing:
+            raise IndexError(
+                "Index must be a DatetimeIndex or an increasing numeric index of year (e.g. 0.5, 1, 1.5, ...).")
+        starting_date = self.trade_date + BDay(self.spot_lag)
         maturity = business_adjustment(self.convention,
                                        [starting_date + DateOffset(years=maturity // 1, months=12 * (maturity % 1)) for
-                                        maturity in self._normalize(swap_rate.index)])
+                                        maturity in swap_rate.index])
         return pd.DataFrame({"term": maturity, "swapRate": swap_rate.iloc[:, 0]})
-
-    @staticmethod
-    def _normalize(data):
-        clean_mat = []
-        for maturity in data:
-            if isinstance(maturity, numbers.Number):
-                clean_mat.append(maturity)
-                continue
-            maturity = unicodedata.normalize("NFKD", maturity).strip()
-            if re.search("M", maturity):
-                clean_mat.append(int(re.search("\d+", maturity).group()) / 12)
-            else:
-                clean_mat.append(int(re.search("\d+", maturity).group()))
-        return np.array(clean_mat)
 
 
 class DiscountCurve:
@@ -134,39 +128,50 @@ class DiscountCurve:
     dcc = DayCountConvention(sterilize_attr=["_spot_rates", "_discount_factors"])
     compounding = CompoundingConvention(sterilize_attr=["_spot_rates", "_discount_factors"])
 
-    def __init__(self, swap_rate_curve, compounding="annually_compounded", dcc="ACT/365", interpolation="linear"):
+    def __init__(self, rate_curve, compounding="annually_compounded", dcc="ACT/365", interpolation="linear"):
         """
         Args:
-            swap_rate_curve (SwapRateCurve): swap rate curve object
+            rate_curve (SwapRateCurve | SpotRateCurve): swap rate curve object or SpotRateCurve
             compounding (str): compounding of the discount curve (default is 'annually_compounded')
             dcc (str): day count convention for the market rates (default is ACT/365)
             interpolation (str): interpolation method to be used on spot rates interpolation
         """
-        self.dcc = dcc
-        self.compounding = compounding
-        self.interpolation = interpolation
-        self.swap_rate_curve = swap_rate_curve
+        self._df = None
+        self._sr = None
         self._discount_factors = None
         self._spot_rates = None
         self._shift = 0
         self._shift_flag = False
+        self.dcc = dcc
+        self.compounding = compounding
+        self.interpolation = interpolation
+        self.rate_curve = rate_curve
 
     @property
-    def swap_rate_curve(self):
-        return self._swap_rate_curve
+    def rate_curve(self):
+        return self._rate_curve
 
-    @swap_rate_curve.setter
-    def swap_rate_curve(self, swap_rate_curve):
-        if isinstance(swap_rate_curve, SwapRateCurve):
-            self.trade_date = swap_rate_curve.trade_date
-            self._swap_rate_curve = swap_rate_curve
+    @rate_curve.setter
+    def rate_curve(self, rate_curve):
+
+        if isinstance(rate_curve, SwapRateCurve):
+            self.trade_date = rate_curve.trade_date
+            self._rate_curve = rate_curve
+            self._starting_date = rate_curve.trade_date + BDay(rate_curve.spot_lag)
             self._discount_factors = None
             self._spot_rates = None
-            self._starting_date = swap_rate_curve.trade_date + BDay(swap_rate_curve.spot_leg)
             self._get_df_from_swap_rate()
             self._get_spot()
+        elif isinstance(rate_curve, SpotRateCurve):
+            self.trade_date = rate_curve.trade_date
+            self._rate_curve = rate_curve
+            self._starting_date = rate_curve.trade_date + BDay(rate_curve.spot_lag)
+            self._discount_factors = None
+            self._spot_rates = None
+            self._sr = rate_curve.sr
+
         else:
-            raise ValueError("You need to pass a 'SwapRateCurve' object.")
+            raise ValueError("You need to pass a 'SwapRateCurve' object or a 'SpotRateCurve.")
 
     @property
     def discount_factors(self):
@@ -176,7 +181,7 @@ class DiscountCurve:
 
     @discount_factors.setter
     def discount_factors(self, value):
-        raise ValueError("Can't set discount factors directly.")
+        raise ValueError("Can't set discount factors directly, use 'set_discount_factors' method.")
 
     @property
     def interpolation(self):
@@ -214,7 +219,7 @@ class DiscountCurve:
         return self._shift_flag
 
     def __repr__(self):
-        return f"DiscountCurve(trade_date={self.swap_rate_curve.trade_date.strftime('%Y-%m-%d')}, " \
+        return f"DiscountCurve(trade_date={self.rate_curve.trade_date.strftime('%Y-%m-%d')}, " \
                f"compounding={self.compounding}, dcc={self.dcc})"
 
     def reset_shift(self) -> None:
@@ -268,8 +273,7 @@ class DiscountCurve:
         self._shift += shift
         self._spot_rates["spotRate"] = self.spot_rates.spotRate + shift
 
-    def set_df(self, df) -> None:
-        # TODO: check this
+    def set_discount_factors(self, df) -> None:
         """
         Overrides internal calculation of discount factor from swap rate.
         Args:
@@ -305,10 +309,10 @@ class DiscountCurve:
         self._sr = pd.DataFrame({"term": term, **spot_rates})
 
     def _get_df_from_swap_rate(self):
-        maturity = [self._starting_date] + self.swap_rate_curve.interpolated_rates.term.to_list()
-        afs = accrual_factor(self.swap_rate_curve.dcc, maturity)
+        maturity = [self._starting_date] + self.rate_curve.interpolated_rates.term.to_list()
+        afs = accrual_factor(self.rate_curve.dcc, maturity)
         annuity, df = np.array([0]), np.array([1])
-        for sr, af in zip(self.swap_rate_curve.interpolated_rates.interpolatedSwapRate, afs):
+        for sr, af in zip(self.rate_curve.interpolated_rates.interpolatedSwapRate, afs):
             df = np.append(df, (1 - annuity[-1] * sr) / (1 + af * sr))
             annuity = np.append(annuity, annuity[-1] + df[-1] * af)
         self._df = pd.DataFrame(
@@ -316,11 +320,11 @@ class DiscountCurve:
              "accrualFactor": afs})
 
     def _interpolate_spot_rates(self):
-        day_since_start = np.array([d.days for d in self._sr.maturity - self._starting_date])
-        interpolating_function = scipy.interpolate.interp1d(day_since_start, self._sr.spotRate,
+        day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
+        interpolating_function = scipy.interpolate.interp1d(day_since_start, self.sr.spotRate,
                                                             kind=self.interpolation)
 
-        date_to_interpolate = pd.date_range(self._sr.maturity.iloc[0], self._sr.maturity.iloc[-1])
+        date_to_interpolate = pd.date_range(self.sr.maturity.iloc[0], self.sr.maturity.iloc[-1])
         days_to_interpolate = np.array([d.days for d in date_to_interpolate - self._starting_date])
 
         af_since_trade = accrual_factor(self.dcc, self.trade_date, date_to_interpolate)
@@ -328,7 +332,7 @@ class DiscountCurve:
         spot_rates = pd.DataFrame({"maturity": date_to_interpolate, "term": af_since_trade,
                                    "spotRate": interpolating_function(days_to_interpolate)})
 
-        # for maturity shorter than 1M, simply back-propagate the 1M euribor
+        # for shorter maturity, simply back-propagate first euribor rate available
         dates = pd.date_range(self.trade_date, date_to_interpolate[0], inclusive="left")
         lm = pd.DataFrame({"maturity": dates, "term": accrual_factor(self.dcc, dates[0], dates)})
         self._spot_rates = pd.concat([lm, spot_rates], ignore_index=True).bfill()
@@ -349,11 +353,13 @@ class DiscountCurve:
                     {"maturity": maturity, "discountFactor": np.exp(-spot_rate * term)}).set_index("maturity")
 
     def __add__(self, other):
-        if isinstance(other, EuriborCurve):
-            self._sr = pd.concat([other.spot_rates, self._sr],
-                                 ignore_index=True).drop_duplicates("maturity", keep="first")
+        if isinstance(other, (EuriborCurve, SpotRateCurve)):
+            self._sr = pd.concat([other.sr, self.sr],
+                                 ignore_index=True).drop_duplicates("maturity", keep="first").sort_values("maturity")
+            self._spot_rates = None
         else:
-            raise ValueError(f"DiscountCurve can be added only to EuriborCurve. Got '{other.__class__.__name__}'.")
+            raise ValueError(f"DiscountCurve can be added only to EuriborCurve or SpotRateCurve."
+                             f" Got '{other.__class__.__name__}'.")
         return self
 
 
@@ -363,40 +369,47 @@ class EuriborCurve:
     """
     _DCC = "ACT/360"
     _BUSINESS_CONVENTION = "modified_following"
-    _SPOT_LEG = 2
-    _MAPPING = {"1M": 1, "3M": 3, "6M": 6, "12M": 12}
+    _SPOT_LAG = 2
+    _ALLOWED_MATURITIES = ["1W", "1M", "3M", "6M", "12M",
+                           "1 week", "1 month", "3 month", "6 month", "12 month"]
+    _OFFSETS = {"1W": DateOffset(days=7), "1M": DateOffset(months=1), "3M": DateOffset(months=3),
+                "6M": DateOffset(months=6), "12M": DateOffset(months=12),
+                "1 week": DateOffset(days=7), "1 month": DateOffset(months=1), "3 month": DateOffset(months=3),
+                "6 month": DateOffset(months=6), "12 month": DateOffset(months=12)}
 
-    trade_date = Date()
+    trade_date = Date(sterilize_attr=["_spot_rates", "_discount_factors", "_sr"])
+    euribor = DataFrame(sterilize_attr=["_spot_rates", "_discount_factors", "_sr"])
 
-    def __init__(self, euribor, trade_date):
+    def __init__(self, euribor, trade_date, interpolation="cubic"):
         """
         Args:
             euribor (pandas.DataFrame): dataframe with euribor rate 1M, 3M, 6M and 12M.
-            trade_date (str): "YYYY-MM-DD" or pandas.Timestamp for the starting date
+            trade_date (str | pandas.Timestamp): "YYYY-MM-DD" or pandas.Timestamp for the starting date
         """
+
         self.trade_date = trade_date
         self.euribor = euribor
+        self._starting_date = self.trade_date + BDay(self._SPOT_LAG)
+        self.interpolation = interpolation
+        self._sr = None
         self._discount_factors = None
+        self._spot_rates = None
 
     @property
-    def euribor(self):
-        return self._euribor
+    def spot_lag(self):
+        return self._SPOT_LAG
 
-    @euribor.setter
-    def euribor(self, euribor):
-        self._euribor = euribor
-        try:
-            self._process_spot()
-        except Exception:
-            raise ValueError(Exception)
+    @property
+    def sr(self):
+        if self._sr is None:
+            self._process_spot_rate()
+        return self._sr
 
     @property
     def spot_rates(self):
+        if self._spot_rates is None:
+            self._interpolate_spot_rates()
         return self._spot_rates
-
-    @spot_rates.setter
-    def spot_rates(self, value):
-        raise ValueError("Can't do this!")
 
     @property
     def discount_factors(self):
@@ -408,16 +421,31 @@ class EuriborCurve:
     def discount_factors(self, value):
         raise ValueError("Can't do this!")
 
+    @property
+    def interpolation(self):
+        return self._interpolation
+
+    @interpolation.setter
+    def interpolation(self, interpolation):
+        if isinstance(interpolation, str):
+            self._discount_factors = None
+            self._spot_rates = None
+            self._interpolation = interpolation
+        else:
+            raise ValueError("Interpolation must be a string.")
+
     def __repr__(self):
         return f"EuriborCurve(trade_date={self.trade_date.strftime('%Y-%m-%d')})"
 
-    def _process_spot(self):
-        starting_date = self.trade_date + BDay(self._SPOT_LEG)
-        maturity = [starting_date + DateOffset(months=months) for months in self.euribor.columns.map(self._MAPPING)]
+    def _process_spot_rate(self):
+        if not all([name in self._ALLOWED_MATURITIES for name in self.euribor.columns]):
+            raise ValueError(f"Column names of Euribor data not valid. Valid column names"
+                             f" are {', '.join(self._ALLOWED_MATURITIES)}.")
+        maturity = self._starting_date + self.euribor.columns.map(self._OFFSETS)
         maturity = pd.Index(business_adjustment(self._BUSINESS_CONVENTION, maturity))
-        self._spot_rates = pd.DataFrame({"maturity": maturity,
-                                         "term": accrual_factor(self._DCC, self.trade_date, maturity),
-                                         "spotRate": self.euribor.loc[self.trade_date]})
+        self._sr = pd.DataFrame({"maturity": maturity,
+                                 "term": accrual_factor(self._DCC, self.trade_date, maturity),
+                                 "spotRate": self.euribor.loc[self.trade_date]})
 
     def _get_discount_factors(self):
         term = accrual_factor(self._DCC, self.trade_date, self.spot_rates.maturity)
@@ -425,13 +453,131 @@ class EuriborCurve:
         self._discount_factors = pd.DataFrame({"maturity": self.spot_rates.maturity,
                                                "discountFactor": 1 / (1 + spot_rate * term)})
 
+    def _interpolate_spot_rates(self):
+        day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
+        interpolator = scipy.interpolate.interp1d(day_since_start, self.sr.spotRate, kind=self.interpolation)
+        date_to_interpolate = pd.date_range(self.sr.maturity.iloc[0], self.sr.maturity.iloc[-1])
+        days_to_interpolate = np.array([d.days for d in date_to_interpolate - self._starting_date])
+        af_since_trade = accrual_factor(self._DCC, self.trade_date, date_to_interpolate)
+        spot_rates = pd.DataFrame({"maturity": date_to_interpolate, "term": af_since_trade,
+                                   "spotRate": interpolator(days_to_interpolate)})
+        dates = pd.date_range(self.trade_date, date_to_interpolate[0], inclusive="left")
+        lm = pd.DataFrame({"maturity": dates, "term": accrual_factor(self._DCC, dates[0], dates)})
+        self._spot_rates = pd.concat([lm, spot_rates], ignore_index=True).bfill()
+
     def __add__(self, other):
 
-        if isinstance(other, DiscountCurve):
-            other._sr = pd.concat([self.spot_rates, other.sr],
-                                  ignore_index=True).drop_duplicates("maturity", keep="first")
-
+        if isinstance(other, (DiscountCurve, SpotRateCurve)):
+            other._sr = pd.concat([self.sr, other.sr],
+                                  ignore_index=True).drop_duplicates("maturity", keep="first").sort_values("maturity")
+            other._spot_rates = None
         else:
-            raise ValueError(f"EuriborCruve can be added only to DiscountCurve. Got '{other.__class__.__name__}'.")
-
+            raise ValueError(f"EuriborCurve can be added only to DiscountCurve or SpotRateCurve. "
+                             f"Got '{other.__class__.__name__}'.")
         return other
+
+
+class SpotRateCurve:
+    """
+    Spot rate curve for handling spot rates
+    """
+    _SPOT_LAG = 2
+    spot_rates_data = DataFrame(index_type=pd.DatetimeIndex, sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
+    trade_date = Date(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
+    dcc = DayCountConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
+    business_convention = BusinessConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
+    compounding = CompoundingConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
+
+    def __init__(self, spot_rates_data, trade_date, dcc="ACT/365", business_convention="modified_following",
+                 interpolation="cubic", compounding="annually_compounded"):
+        """
+        Args:
+            spot_rates_data (pandas.DataFrame): dataframe of spot rates
+            trade_date (str | pandas.Timestamp): "YYYY-MM-DD" or pandas.Timestamp for the starting date
+            dcc (str): day count convention
+            business_convention (str): business convention
+        """
+
+        self._discount_factors = None
+        self._spot_rates = None
+        self._sr = None
+        self.compounding = compounding
+        self.spot_rates_data = spot_rates_data
+        self.trade_date = trade_date
+        self.dcc = dcc
+        self.business_convention = business_convention
+        self.interpolation = interpolation
+        self._starting_date = self.trade_date + BDay(self._SPOT_LAG)
+
+    @property
+    def spot_lag(self):
+        return self._SPOT_LAG
+
+    @property
+    def sr(self):
+        if self._sr is None:
+            self._process_spot_rate()
+        return self._sr
+
+    @property
+    def spot_rates(self):
+        if self._spot_rates is None:
+            self._interpolate_spot_rates()
+        return self._spot_rates
+
+    @property
+    def discount_factors(self):
+        if self._discount_factors is None:
+            self._get_discount_factors()
+        return self._discount_factors
+
+    @discount_factors.setter
+    def discount_factors(self, value):
+        raise ValueError("Can't do this!")
+
+    def _process_spot_rate(self):
+        af_since_trade = accrual_factor(self.dcc, self.trade_date, self.spot_rates_data.index)
+        self._sr = pd.DataFrame({"maturity": self.spot_rates_data.index, "term": af_since_trade,
+                                 "spotRate": self.spot_rates_data.iloc[:, 0].values})
+
+    def _interpolate_spot_rates(self):
+        day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
+        interpolator = scipy.interpolate.interp1d(day_since_start, self.sr.spotRate, kind=self.interpolation)
+        date_to_interpolate = pd.date_range(self.sr.maturity.iloc[0], self.sr.maturity.iloc[-1])
+        days_to_interpolate = np.array([d.days for d in date_to_interpolate - self._starting_date])
+        af_since_trade = accrual_factor(self.dcc, self.trade_date, date_to_interpolate)
+        spot_rates = pd.DataFrame({"maturity": date_to_interpolate, "term": af_since_trade,
+                                   "spotRate": interpolator(days_to_interpolate)})
+        dates = pd.date_range(self.trade_date, date_to_interpolate[0], inclusive="left")
+        lm = pd.DataFrame({"maturity": dates, "term": accrual_factor(self.dcc, dates[0], dates)})
+        self._spot_rates = pd.concat([lm, spot_rates], ignore_index=True).bfill().drop_duplicates("maturity",
+                                                                                                  keep="last")
+
+    def _get_discount_factors(self):
+        maturity = self.spot_rates.maturity
+        spot_rate = self.spot_rates.spotRate.to_numpy()
+        term = self.spot_rates.term.to_numpy()
+        match self.compounding:
+            case "simple":
+                self._discount_factors = pd.DataFrame(
+                    {"maturity": maturity, "discountFactor": 1 / (1 + spot_rate * term)}).set_index("maturity")
+            case "annually_compounded":
+                self._discount_factors = pd.DataFrame(
+                    {"maturity": maturity, "discountFactor": 1 / (1 + spot_rate) ** term}).set_index("maturity")
+            case "continuous":
+                self._discount_factors = pd.DataFrame(
+                    {"maturity": maturity, "discountFactor": np.exp(-spot_rate * term)}).set_index("maturity")
+
+    def __add__(self, other):
+
+        if isinstance(other, (DiscountCurve, EuriborCurve)):
+            other._sr = pd.concat([self.sr, other.sr],
+                                  ignore_index=True).drop_duplicates("maturity", keep="first").sort_values("maturity")
+            other._spot_rates = None
+        else:
+            raise ValueError(f"EuriborCurve can be added only to DiscountCurve or SpotRateCurve. "
+                             f"Got '{other.__class__.__name__}'.")
+        return other
+
+    def __repr__(self):
+        return f"SpotRateCurve(trade_date={self.trade_date.strftime('%Y-%m-%d')}, compounding={self.compounding}, dcc={self.dcc})"

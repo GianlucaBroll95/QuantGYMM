@@ -42,7 +42,7 @@ def instance_class_with_none_and_nan():
 
 @pytest.fixture
 def instance_class_dataframe():
-    obj = type("TestClass", (), {"pandas": DataFrame(index_type=pd.DatetimeIndex)})
+    obj = type("TestClass", (), {"pandas": DataFrame(index_type=(pd.DatetimeIndex, pd.RangeIndex))})
     return obj()
 
 
@@ -230,8 +230,8 @@ def test_valid_dataframe_index(instance_class_dataframe, pandas):
     assert instance_class_dataframe.pandas is pandas
 
 
-@pytest.mark.parametrize("pandas", [pd.DataFrame({"data": [1, 2, 3, 4]}),
-                                    pd.DataFrame({"data": [1, 2, 3, 4]}, index=pd.RangeIndex(4))])
+@pytest.mark.parametrize("pandas", [pd.DataFrame({"data": [1, 2, 3, 4]}, index=pd.CategoricalIndex(["a", "b", "c", "a"])),
+                                    pd.DataFrame({"data": [1, 2, 3, 4]}, index=pd.interval_range(start=0, end=4))])
 def test_invalid_dataframe_index(instance_class_dataframe, pandas):
     with pytest.raises(IndexError):
         instance_class_dataframe.pandas = pandas
