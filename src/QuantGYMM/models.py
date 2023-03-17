@@ -31,6 +31,7 @@ class MertonSimulator:
             seed (int): [optional] seed for reproducibility
         """
 
+        self._af = None
         self.start_date = start_date
         self.nsim = nsim
         self.seed = seed
@@ -135,6 +136,8 @@ class MertonSimulator:
         """
         self._spot_rates = spot_rates
         self._ttm = accrual_factor("ACT/365", self.start_date, self.spot_rates.index if ttm is None else ttm)
+        self._af = accrual_factor("ACT/365", [self.start_date] +
+                                  (self.spot_rates.index.tolist() if ttm is None else ttm)).reshape(-1, 1)
         self._dt = np.diff(self._ttm, prepend=0)
         self._param_risk_free_calibration()
 
@@ -165,9 +168,9 @@ class MertonSimulator:
         self.s = self._spot_rates.diff().var().item() * 252
 
     def _simulate_discount_factors(self):
-        af = accrual_factor("ACT/365", [self.start_date] + self.spot_rates.index.to_list()).reshape(-1, 1)
+        # af = accrual_factor("ACT/365", [self.start_date] + self.spot_rates.index.to_list()).reshape(-1, 1)
         ds = self.simulated_short_rates[1:, :] + self.simulated_short_rates[:-1, :]
-        self._simulated_discount_factors = 1 / (1 * np.exp(np.cumsum(ds * af / 2, axis=0)))
+        self._simulated_discount_factors = 1 / (1 * np.exp(np.cumsum(ds * self._af / 2, axis=0)))
 
     def _simulate_spot_rates(self):
         self._simulated_spot_rates = (-np.log(self.simulated_discount_factors.T) / self._ttm).T
