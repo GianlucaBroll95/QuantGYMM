@@ -40,3 +40,8 @@ pip install .
 
 ## [Instruments and Usages](#usages)
 
+`QuantGYMM` comprises six main modules: `instruments`, `models`, `term_structures`, `calendar`, `pricers` and `utils`. 
+### Instruments
+At the moment, there are two instruments available: `FloatingRateBond` and `VanillaSwap`. 
+### Models
+This modules gathers two models for fitting a term structure for simulation. At the moment, `MertonSimulator` allows to simulate the term structure by using Merton model and allowing for risk-neutral and real-world calibration.
