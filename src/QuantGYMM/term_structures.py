@@ -6,9 +6,6 @@ import pandas as pd
 import scipy
 from .utils import *
 from pandas.tseries.offsets import DateOffset, BDay
-import numbers
-import unicodedata
-import re
 
 __all__ = ["SwapRateCurve", "DiscountCurve", "EuriborCurve"]
 
@@ -24,19 +21,20 @@ class SwapRateCurve:
     trade_date = Date(sterilize_attr=["_interpolated_rates"])
     frequency = PositiveNumber(sterilize_attr=["_interpolated_rates"])
 
-    def __init__(self, swap_rate, trade_date, frequency, convention="modified_following", dcc="30/360",
+    def __init__(self, swap_rate, trade_date, frequency, business_convention="modified_following", dcc="30/360",
                  interpolation="linear"):
         """
         Args:
             swap_rate (pandas.DataFrame): swap rate dataframe, should have datetime index and numbers as column
                                         names (e.g. 1, 1.5, 2, ...) corresponding to swap maturities.
             frequency (int): swap fixed leg payment frequency
+            business_convention (str): business convention
             trade_date (str | pandas.Timestamp): "YYYY-MM-DD" string representing the trade date
             dcc (str): day count convention of the fixed swap leg
             interpolation (str): method to be used to interpolate swap rate
         """
         self.interpolation = interpolation
-        self.convention = convention
+        self.convention = business_convention
         self.dcc = dcc
         self.frequency = frequency
         self.trade_date = trade_date
@@ -128,10 +126,10 @@ class DiscountCurve:
     dcc = DayCountConvention(sterilize_attr=["_spot_rates", "_discount_factors"])
     compounding = CompoundingConvention(sterilize_attr=["_spot_rates", "_discount_factors"])
 
-    def __init__(self, rate_curve, compounding="annually_compounded", dcc="ACT/365", interpolation="linear"):
+    def __init__(self, rate_curve, compounding="annually_compounded", dcc="ACT/365", interpolation="cubic"):
         """
         Args:
-            rate_curve (SwapRateCurve | SpotRateCurve): swap rate curve object or SpotRateCurve
+            rate_curve (SwapRateCurve | SpotRateCurve | EuriborCurve): swap rate curve object or SpotRateCurve
             compounding (str): compounding of the discount curve (default is 'annually_compounded')
             dcc (str): day count convention for the market rates (default is ACT/365)
             interpolation (str): interpolation method to be used on spot rates interpolation
@@ -162,7 +160,7 @@ class DiscountCurve:
             self._spot_rates = None
             self._get_df_from_swap_rate()
             self._get_spot()
-        elif isinstance(rate_curve, SpotRateCurve):
+        elif isinstance(rate_curve, (SpotRateCurve, EuriborCurve)):
             self.trade_date = rate_curve.trade_date
             self._rate_curve = rate_curve
             self._starting_date = rate_curve.trade_date + BDay(rate_curve.spot_lag)
@@ -488,11 +486,11 @@ class SpotRateCurve:
     business_convention = BusinessConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
     compounding = CompoundingConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
 
-    def __init__(self, spot_rates_data, trade_date, dcc="ACT/365", business_convention="modified_following",
+    def __init__(self, spot_rates, trade_date, dcc="ACT/365", business_convention="modified_following",
                  interpolation="cubic", compounding="annually_compounded"):
         """
         Args:
-            spot_rates_data (pandas.DataFrame): dataframe of spot rates
+            spot_rates (pandas.DataFrame): dataframe of spot rates
             trade_date (str | pandas.Timestamp): "YYYY-MM-DD" or pandas.Timestamp for the starting date
             dcc (str): day count convention
             business_convention (str): business convention
@@ -502,7 +500,7 @@ class SpotRateCurve:
         self._spot_rates = None
         self._sr = None
         self.compounding = compounding
-        self.spot_rates_data = spot_rates_data
+        self.spot_rates_data = spot_rates
         self.trade_date = trade_date
         self.dcc = dcc
         self.business_convention = business_convention
