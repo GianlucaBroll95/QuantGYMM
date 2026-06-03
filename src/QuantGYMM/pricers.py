@@ -36,7 +36,7 @@ class Pricer:
         if isinstance(discount_curve, DiscountCurve):
             self._discount_curve = discount_curve
             self._forward_rates = None
-            self._current_coupon_pv = None
+            self._current_coupon = None
             self._expected_coupons = None
         else:
             raise ValueError(
