@@ -174,7 +174,7 @@ class Boolean:
 
 
 class DayCountConvention:
-    _DAY_COUNT_CONVENTIONS = ["30/360", "ACT/360", "ACT/365"]
+    _DAY_COUNT_CONVENTIONS = ["30/360", "ACT/360", "ACT/365", "ACT/ACT"]
 
     def __init__(self, sterilize_attr=None):
         if sterilize_attr is None:
