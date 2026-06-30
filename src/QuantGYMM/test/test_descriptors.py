@@ -170,13 +170,15 @@ def test_invalid_compounding_convention(instance_class, compounding_convention):
         instance_class.compounding_convention = compounding_convention
 
 
-@pytest.mark.parametrize("day_count_convention", ["ACT/360", "ACT/365", "30/360"])
+@pytest.mark.parametrize("day_count_convention",
+                         ["ACT/360", "ACT/365", "30/360", "30E/360", "ACT/ACT", "ACT/ACT ISDA",
+                          "ACT/ACT ICMA", "NL/365"])
 def test_valid_dcc_convention(instance_class, day_count_convention):
     instance_class.day_count_convention = day_count_convention
     assert instance_class.day_count_convention == day_count_convention
 
 
-@pytest.mark.parametrize("day_count_convention", ["ACT/ACT", 1, False, True, None])
+@pytest.mark.parametrize("day_count_convention", ["360/ACT", 1, False, True, None])
 def test_invalid_dcc_convention(instance_class, day_count_convention):
     with pytest.raises(ValueError):
         instance_class.day_count_convention = day_count_convention
