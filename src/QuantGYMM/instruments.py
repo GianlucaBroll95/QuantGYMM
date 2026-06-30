@@ -735,11 +735,13 @@ class FixedRateBond:
                     up = original_data.copy()
                     up.loc[tenor_date] += shift_size
                     sr_curve.spot_rates_data = up
+                    self.discount_curve.rate_curve = sr_curve
                     price_up = self.prices()[price_key]["dirtyPrice"]
      
                     down = original_data.copy()
                     down.loc[tenor_date] -= shift_size
                     sr_curve.spot_rates_data = down
+                    self.discount_curve.rate_curve = sr_curve
                     price_down = self.prices()[price_key]["dirtyPrice"]
      
                     krd[tenor_date] = (price_up - price_down) / (2 * shift_size) * 0.0001
@@ -749,6 +751,7 @@ class FixedRateBond:
                     shocked = original_data.copy()
                     shocked.loc[tenor_date] += shift_size
                     sr_curve.spot_rates_data = shocked
+                    self.discount_curve.rate_curve = sr_curve
                     price_shocked = self.prices()[price_key]["dirtyPrice"]
      
                     krd[tenor_date] = (price_shocked - price_base) / shift_size * 0.0001
