@@ -553,7 +553,7 @@ class SpotRateCurve:
         if spot_rates.empty:
             raise ValueError(f"No ECB observation found on {adj_date.strftime('%Y-%m-%d')}.")
         
-        spot_rates         = spot_rates.set_index(["DATA_TYPE_FM", "TIME_PERIOD"])["OBS_VALUE"].unstack("TIME_PERIOD")
+        spot_rates         = spot_rates.set_index(["DATA_TYPE_FM", "TIME_PERIOD"])["OBS_VALUE"].unstack("TIME_PERIOD") / 100
         tenor_to_date      = ({f"SR_{m}M": adj_date + pd.DateOffset(months=m) for m in (3, 6)} |
                               {f"SR_{y}Y": adj_date + pd.DateOffset(months=y * 12) for y in (1, 2, 3, 5, 7, 10, 15, 20, 30)})
         spot_rates.columns = ["spotRate"]
