@@ -49,13 +49,21 @@ class Schedule:
 
     def _create_schedule(self):
 
-        date = pd.date_range(self.start_date,
-                             self.end_date,
-                             freq=DateOffset(years=int((1 / self.frequency) // 1),
-                                     months=int((1 / self.frequency) % 1 * 12)))
+        step      = DateOffset(years=int((1 / self.frequency) // 1), months=int((1 / self.frequency) % 1 * 12)))
+        generated = self.end_date
+        d         = self.end_date
+
+        while d - step >= self.start_date:
+            d = d - step
+            generated.append(d)
+
+        generated = sorted(generated)
 
         if self.eom and self.start_date.is_month_end:
-            date = [d + MonthEnd(0) for d in date]
+            generated = [d + MonthEnd(0) for d in generated]
+
+        if generated[0] != self.start_date:
+            date = [self.start_date] + generated
 
         date = business_adjustment(self.convention, date)
         date = np.array([d.normalize() for d in date])
