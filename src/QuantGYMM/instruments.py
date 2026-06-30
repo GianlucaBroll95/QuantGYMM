@@ -12,7 +12,7 @@ from .pricers import Pricer
 from .term_structures import DiscountCurve
 from .calendar import Schedule
 
-__all__ = ["FloatingRateBond", "VanillaSwap"]
+__all__ = ["FloatingRateBond", "VanillaSwap", "FixedRateBond"]
 
 
 
@@ -627,3 +627,227 @@ class VanillaSwap:
                 return (price_shift - price) / shift_size * 0.0001
             case _:
                 raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
+
+
+class FixedRateBond:
+    """
+    Bond class for fixed rate bond.
+    """
+    dcc = DayCountConvention(sterilize_attr=["_cash_flows"])
+    face_amount = PositiveNumber(sterilize_attr=["_cash_flows"])
+    coupon_rate = FloatNumber(sterilize_attr=["_cash_flows"])
+    redemption = FloatNumber(sterilize_attr=["_cash_flows"], none_accepted=True, return_if_none=100.0)
+
+    def __init__(self, schedule, dcc, face_amount, coupon_rate, redemption=None):
+        """
+        Args:
+            schedule (Schedule): schedule object for the coupons
+            dcc (str): day count convention
+            face_amount (int | float): bond face amount
+            coupon_rate (float): fixed annual coupon rate (e.g. 0.0375 for 3.75%)
+            redemption (float): [optional] redemption price as a percentage of face amount, default is 100.0
+        """
+        self.dcc = dcc
+        self.face_amount = face_amount
+        self.coupon_rate = coupon_rate
+        self.redemption = redemption
+        self.schedule = schedule
+        self._evaluation_date = None
+        self._discount_curve = None
+        self._cash_flows = None
+        self._cds_spread = None
+        self._recovery_rate = None
+        self._survival_probabilities = None
+
+    @property
+    def schedule(self):
+        return self._schedule
+
+    @schedule.setter
+    def schedule(self, schedule):
+        if isinstance(schedule, Schedule):
+            self._schedule = copy.deepcopy(schedule)
+            self._cash_flows = None
+        else:
+            raise ValueError(f"'{schedule}' is not a Schedule object.")
+
+    @property
+    def evaluation_date(self):
+        if self._evaluation_date is None:
+            raise ValueError("Evaluation date has not been set. Call 'set_evaluation_date' method to set it.")
+        return self._evaluation_date
+
+    @property
+    def discount_curve(self):
+        if self._discount_curve is None:
+            raise ValueError("No discount curve set. Call 'set_discount_curve' method to set it.")
+        return self._discount_curve
+
+    @property
+    def cash_flows(self):
+        if self._cash_flows is None:
+            self._cash_flows = self._get_cash_flows()
+        return self._cash_flows
+
+    @property
+    def cds_spread(self):
+        if self._cds_spread is None:
+            raise ValueError("CDS spread has not been set. Call 'set_cds_spread' method to set it.")
+        return self._cds_spread
+
+    @property
+    def recovery_rate(self):
+        if self._recovery_rate is None:
+            raise ValueError("Recovery rate has not been set. Call 'set_recovery_rate' method to set it.")
+        return self._recovery_rate
+
+    @property
+    def survival_probabilities(self):
+        if self._survival_probabilities is None:
+            self._get_survival_prob()
+        return self._survival_probabilities
+
+    def __repr__(self):
+        return f"FixedRateBond(faceAmount={self.face_amount}, couponRate={self.coupon_rate}, " \
+               f"maturity={self.schedule.schedule['paymentDate'][-1].strftime(format('%Y-%m-%d'))}, " \
+               f"redemption={self.redemption})"
+
+    def set_evaluation_date(self, date) -> None:
+        """
+        Set evaluation date for market price calculation.
+        Args:
+            date (str | pandas.Timestamp): trade date
+        """
+        try:
+            self._evaluation_date = pd.to_datetime(date)
+            self._cash_flows = None
+        except Exception:
+            raise ValueError(f"Can't convert {date} to datetime.")
+
+    def set_discount_curve(self, discount_curve) -> None:
+        """
+        Set the discount curve to be used in the market value calculation.
+        Args:
+            discount_curve (DiscountCurve): instance of DiscountCurve class
+        """
+        if isinstance(discount_curve, DiscountCurve):
+            self._discount_curve = discount_curve
+        else:
+            raise ValueError("'discount_curve' must be a DiscountCurve object.")
+
+    def _get_cash_flows(self) -> pd.DataFrame:
+        """
+        Build the future cash flow schedule (coupons + redemption) as of the evaluation date.
+        Returns:
+            pandas.DataFrame of coupon start, coupon end, accrual factor and cash flow amount.
+        """
+        starts = self.schedule.schedule["startingDate"]
+        payments = self.schedule.schedule["paymentDate"]
+        future_mask = payments > self.evaluation_date
+        starts, payments = starts[future_mask], payments[future_mask]
+        af = accrual_factor(self.dcc, starts, payments)
+        coupon = self.coupon_rate * af * self.face_amount
+        coupon[-1] += self.redemption / 100 * self.face_amount
+        self._cash_flows = pd.DataFrame(
+            {"couponStart": starts, "couponEnd": payments, "accrualFactor": af, "cashFlow": coupon},
+            index=pd.RangeIndex(1, len(payments) + 1, name="couponNumber")
+        )
+        return self._cash_flows
+
+    def prices(self) -> dict:
+        """
+        Compute fair market price as the sum of discounted future cash flows.
+        Returns:
+            dict with risk-free (and, if a CDS spread/recovery rate are set, risk-adjusted) dirty/clean price.
+        """
+        df = self.discount_curve.discount_factors.loc[self.cash_flows.couponEnd].to_numpy().squeeze()
+        start, end = self.cash_flows.couponStart.iloc[0], self.cash_flows.couponEnd.iloc[0]
+        accrued_interest = self.coupon_rate * self.face_amount * (
+            self.evaluation_date + BDay(2) - start).days / (end - start).days
+
+        cash_flow_pv = self.cash_flows.cashFlow.to_numpy().dot(df)
+        prices = {"riskFreeValue": {"dirtyPrice": cash_flow_pv.item(),
+                                     "accruedInterest": accrued_interest,
+                                     "cleanPrice": (cash_flow_pv - accrued_interest).item()}}
+
+        if self._cds_spread:
+            if self._recovery_rate is None:
+                raise ValueError("CDS spread set but no recovery rate found. Call 'set_recovery_rate'.")
+            coupon_only = self.cash_flows.cashFlow.to_numpy().copy()
+            coupon_only[-1] -= self.redemption / 100 * self.face_amount  # strip redemption out of last cash flow
+            survival = self.survival_probabilities
+            delta_prob = np.diff(-survival, prepend=-1)
+
+            coupon_pv_on_survival = (coupon_only * survival).dot(df)
+            coupon_pv_on_default = (self.recovery_rate * delta_prob).dot(df) * self.face_amount
+            redemption_pv_on_survival = self.redemption / 100 * self.face_amount * df[-1] * survival[-1]
+
+            risk_adj_dirty = coupon_pv_on_survival + coupon_pv_on_default + redemption_pv_on_survival
+            prices = {**prices,
+                      "riskAdjustedValue": {"dirtyPrice": risk_adj_dirty.item(),
+                                            "accruedInterest": accrued_interest,
+                                            "cleanPrice": (risk_adj_dirty - accrued_interest).item()}}
+        return prices
+
+    def sensitivity(self, shift_type="parallel", shift_size=0.01, kind="symmetric") -> float:
+        """
+        Calculate the DV01 of the bond to different types of curve shift by means of finite difference approximation.
+        Args:
+            shift_type (str): type of term structure shift (valid inputs are 'parallel', 'slope', 'curvature').
+            shift_size (float): the term structure shift size to be applied to estimate the bond first derivatives.
+            kind (str): finite difference approximation type (valid inputs are 'symmetric', 'oneside').
+        Returns:
+            The estimated bond DV01.
+        """
+        price_key = "riskAdjustedValue" if self._cds_spread else "riskFreeValue"
+        shift_method = {
+            "parallel": self.discount_curve.apply_parallel_shift,
+            "slope": self.discount_curve.apply_slope_shift,
+            "curvature": self.discount_curve.apply_curvature_shift,
+        }
+        if shift_type not in shift_method:
+            raise ValueError("Admitted shift type are: 'parallel', 'slope' or 'curvature'.")
+
+        self.discount_curve.reset_shift()
+        match kind:
+            case "symmetric":
+                shift_method[shift_type](shift_size)
+                price_up = self.prices()[price_key]["dirtyPrice"]
+                self.discount_curve.reset_shift()
+                shift_method[shift_type](-shift_size)
+                price_down = self.prices()[price_key]["dirtyPrice"]
+                self.discount_curve.reset_shift()
+                return (price_up - price_down) / (2 * shift_size) * 0.0001
+            case "oneside":
+                price = self.prices()[price_key]["dirtyPrice"]
+                shift_method[shift_type](shift_size)
+                price_shift = self.prices()[price_key]["dirtyPrice"]
+                self.discount_curve.reset_shift()
+                return (price_shift - price) / shift_size * 0.0001
+            case _:
+                raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
+
+    def set_cds_spread(self, spread) -> None:
+        """
+        Args:
+            spread (float): CDS spread for a period equal to the bond time to maturity.
+        """
+        if not isinstance(spread, float) and spread is not None:
+            raise ValueError("Wrong type for parameter 'spread', valid type is float.")
+        self._survival_probabilities = None
+        self._cds_spread = spread
+
+    def set_recovery_rate(self, recovery_rate) -> None:
+        """
+        Args:
+            recovery_rate (float | list | numpy.ndarray): either a recovery rate or an array of recovery rates
+                                                            (if the RR is assumed to be time-varying).
+        """
+        if not isinstance(recovery_rate, (np.ndarray, list, float)) and recovery_rate is not None:
+            raise ValueError("Wrong type for 'recovery_rate': it must be a float or an array.")
+        self._survival_probabilities = None
+        self._recovery_rate = recovery_rate
+
+    def _get_survival_prob(self):
+        ttm = accrual_factor("ACT/365", self.evaluation_date, self.cash_flows["couponEnd"])
+        self._survival_probabilities = (np.exp(-self.cds_spread * ttm) - self.recovery_rate) / (1 - self.recovery_rate)
