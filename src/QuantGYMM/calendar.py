@@ -50,7 +50,7 @@ class Schedule:
     def _create_schedule(self):
 
         step      = DateOffset(years=int((1 / self.frequency) // 1), months=int((1 / self.frequency) % 1 * 12))
-        generated = self.end_date
+        generated = [self.end_date]
         d         = self.end_date
 
         while d - step >= self.start_date:
