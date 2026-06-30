@@ -1,12 +1,13 @@
 import numpy as np
+import pandas as pd
 from collections.abc import Iterable
 from pandas.tseries.offsets import BDay, Day
 from dateutil.easter import easter
 
 __all__ = ["is_bd", "is_easter", "is_christmas", "is_holy_friday", "is_holy_monday", "is_target_holiday",
            "is_labour_day", "is_new_year_day", "is_saint_stephen", "modified_following", "modified_following_bimonthly",
-           "preceding", "following", "business_adjustment", "number_of_month", "thirty360", "act365", "act360",
-           "accrual_factor"]
+           "preceding", "following", "business_adjustment", "number_of_month", "thirty360", "thirty_e_360",
+           "act365", "act360", "act_act", "act_act_icma", "nl365", "accrual_factor"]
 def is_easter(date) -> bool:
     return date.date() == easter(date.year)
 
