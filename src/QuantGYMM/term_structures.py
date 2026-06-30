@@ -171,6 +171,31 @@ class DiscountCurve:
         else:
             raise ValueError("You need to pass a 'SwapRateCurve' object or a 'SpotRateCurve.")
 
+
+    def discount_factor_at(self, dates):
+        """
+        Compute discount factors only at the requested date(s), bypassing the cached daily
+        'discount_factors' grid. Delegates to 'rate_curve.rate_at(dates)' for the lean,
+        on-demand spot rate interpolation. Useful for repeated targeted evaluations (e.g.
+        key rate sensitivity shocks) where only a handful of dates matter.
+        Args:
+            dates (pandas.Timestamp | pandas.DatetimeIndex | Iterable[pandas.Timestamp]): date(s)
+                                                                                          to evaluate.
+        Returns:
+            numpy.ndarray of discount factors, same order as 'dates'.
+        """
+        if not isinstance(dates, (pd.DatetimeIndex, pd.Series)):
+            dates = pd.DatetimeIndex(np.atleast_1d(dates))
+        spot_rate = self.rate_curve.rate_at(dates)
+        term = accrual_factor(self.dcc, self.trade_date, dates)
+        match self.compounding:
+            case "simple":
+                return 1 / (1 + spot_rate * term)
+            case "annually_compounded":
+                return 1 / (1 + spot_rate) ** term
+            case "continuous":
+                return np.exp(-spot_rate * term)
+    
     @property
     def discount_factors(self):
         if self._discount_factors is None:
@@ -480,11 +505,11 @@ class SpotRateCurve:
     Spot rate curve for handling spot rates
     """
     _SPOT_LAG = 2
-    spot_rates_data = DataFrame(index_type=pd.DatetimeIndex, sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
-    trade_date = Date(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
-    dcc = DayCountConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
-    business_convention = BusinessConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
-    compounding = CompoundingConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors"])
+    spot_rates_data = DataFrame(index_type=pd.DatetimeIndex, sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
+    trade_date = Date(sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
+    dcc = DayCountConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
+    business_convention = BusinessConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
+    compounding = CompoundingConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
 
     def __init__(self, spot_rates, trade_date, dcc="ACT/365", business_convention="modified_following",
                  interpolation="cubic", compounding="annually_compounded"):
@@ -499,6 +524,7 @@ class SpotRateCurve:
         self._discount_factors = None
         self._spot_rates = None
         self._sr = None
+        self._interpolator = None
         self.compounding = compounding
         self.spot_rates_data = spot_rates
         self.trade_date = trade_date
@@ -596,6 +622,29 @@ class SpotRateCurve:
         self._sr = pd.DataFrame({"maturity": self.spot_rates_data.index, "term": af_since_trade,
                                  "spotRate": self.spot_rates_data.iloc[:, 0].values})
 
+    def rate_at(self, dates):
+        """
+        Evaluate the interpolated spot rate only at the requested date(s), without materializing
+        the full daily grid used by the 'spot_rates' property. The underlying interpolator is
+        built once and cached, invalidated automatically whenever the curve's defining attributes
+        change (spot_rates_data, trade_date, dcc, business_convention, compounding). Useful for
+        repeated, targeted evaluations (e.g. key rate sensitivity shocks) where only a handful of
+        dates matter.
+        Args:
+            dates (pandas.Timestamp | pandas.DatetimeIndex | Iterable[pandas.Timestamp]): date(s)
+                                                                                          to evaluate.
+        Returns:
+            numpy.ndarray of interpolated spot rates, same order as 'dates'.
+        """
+        if not isinstance(dates, (pd.DatetimeIndex, pd.Series)):
+            dates = pd.DatetimeIndex(pd.atleast_1d(dates))
+        if self._interpolator is None:
+            day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
+            self._interpolator = scipy.interpolate.interp1d(day_since_start, self.sr.spotRate,
+                                                            kind=self.interpolation, fill_value="extrapolate")
+        days_requested = np.array([d.days for d in dates - self._starting_date])
+        return self._interpolator(days_requested)
+    
     def _interpolate_spot_rates(self):
         day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
         interpolator = scipy.interpolate.interp1d(day_since_start, self.sr.spotRate, kind=self.interpolation)
