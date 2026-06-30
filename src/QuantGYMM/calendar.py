@@ -64,6 +64,8 @@ class Schedule:
 
         if generated[0] != self.start_date:
             date = [self.start_date] + generated
+        else:
+            date = generated
 
         date = business_adjustment(self.convention, date)
         date = np.array([d.normalize() for d in date])
