@@ -7,7 +7,7 @@ import scipy
 from .utils import *
 from pandas.tseries.offsets import DateOffset, BDay
 
-__all__ = ["SwapRateCurve", "DiscountCurve", "EuriborCurve"]
+__all__ = ["SwapRateCurve", "DiscountCurve", "EuriborCurve", "SpotRateCurve"]
 
 
 class SwapRateCurve:
@@ -507,6 +507,64 @@ class SpotRateCurve:
         self.interpolation = interpolation
         self._starting_date = self.trade_date + BDay(self._SPOT_LAG)
 
+    @classmethod
+    def from_ecb(cls, trade_date=None, issuer="A", dcc="ACT/365", business_convention="modified_following",
+                 interpolation="cubic", compounding="annually_compounded"):
+    """
+    Build a SpotRateCurve by fetching the Svensson-fitted spot rates (SR_) tenor grid directly 
+    from the ECB data API, as of the closest available observation on or befor "date".
+    Args:
+        trade_date (str | pandas.Timestamp | None): evaluation date. If None, the latest available
+                                                    observation is used.
+        issuer (str): 'A' for AAA-rated curve, 'C' for composite (all ratings).
+        dcc (str): day count convention.
+        business_convention (str): business convention.
+        interpolation (str): interpolation method for spot rates.
+        compounding (str): compounding convention.
+    Returns:
+        SpotRateCurve instance.
+    """
+    import requests
+    from io import StringIO
+    
+    sub_annual = [f"SR_{m}M" for m in (3, 6)]
+    annual     = [f"SR_{y}Y" for y in (1, 2, 3, 5, 7, 10, 15, 20, 30)]
+    tenors     = sub_annual + annual
+    key        = f"B.U2.EUR.4F.G_N_{issuer}.SV_C_YM.{'+'.join(tenors)}"
+    trade_date = pd.Timestamp.today() if not trade_date else pd.Timestamp(trade_date)
+    adj_date   = business_adjustment("preceding", trade_date)
+    url        = (f"https://data-api.ecb.europa.eu/service/data/YC/{key}"
+                  f"?startPeriod={adj_date.strftime("%Y-%m-%d")}&endPeriod={adj_date.strftime("%Y-%m-%d")}"
+                 )
+    
+    r = requests.get(
+        url,
+        params={"format": "csvdata"},
+        headers={"Accept": "text/csv"},
+        timeout=30
+    )
+    r.raise_for_status()
+    
+    spot_rates = pd.read_csv(
+        StringIO(r.text), 
+        usecols=["TIME_PERIOD", "DATA_TYPE_FM", "OBS_VALUE"]
+    )
+
+    if spot_rates.empty:
+        raise ValueError(f"No ECB observation found on {adj_date.strftime('%Y-%m-%d')}.")
+    
+    spot_rates         = spot_rates.set_index(["DATA_TYPE_FM", "TIME_PERIOD"])["OBS_VALUE"].unstack("TIME_PERIOD")
+    tenor_to_date      = ({f"SR_{m}M": adj_date + pd.DateOffset(months=m) for m in (3, 6)} |
+                          {f"SR_{y}Y": adj_date + pd.DateOffset(months=y * 12) for y in (1, 2, 3, 5, 7, 10, 15, 20, 30)})
+    spot_rates.columns = ["spotRate"]
+    spot_rates.index   = spot_rates.index.map(tenor_to_date)
+    
+    spot_rates.sort_index(inplace=True)
+    
+    return cls(spot_rates, trade_date, dcc=dcc, business_convention=business_convention,
+                   interpolation=interpolation, compounding=compounding)
+
+    
     @property
     def spot_lag(self):
         return self._SPOT_LAG
