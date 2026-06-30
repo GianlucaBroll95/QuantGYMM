@@ -51,7 +51,8 @@ class Schedule:
 
         date = pd.date_range(self.start_date,
                              self.end_date,
-                             freq=DateOffset(years=int((1 / self.frequency) // 1), months=int((1 / self.frequency) % 1) * 12)))
+                             freq=DateOffset(years=int((1 / self.frequency) // 1),
+                                     months=int((1 / self.frequency) % 1 * 12)))
 
         if self.eom and self.start_date.is_month_end:
             date = [d + MonthEnd(0) for d in date]
