@@ -517,28 +517,28 @@ class VanillaSwap:
                 "slope": self.discount_curve.apply_slope_shift,
                 "curvature": self.discount_curve.apply_curvature_shift,
             }
-            if shift_type not in shift_method:
-                raise ValueError("Admitted shift type are: 'parallel', 'slope' or 'curvature'.")
+        if shift_type not in shift_method:
+            raise ValueError("Admitted shift type are: 'parallel', 'slope' or 'curvature'.")
         
-            self.discount_curve.reset_shift()
-            self._calculate_swap_rate()
-            match kind:
-                case "symmetric":
-                    shift_method[shift_type](shift_size)
-                    price_up = self.market_price()
-                    self.discount_curve.reset_shift()
-                    shift_method[shift_type](-shift_size)
-                    price_down = self.market_price()
-                    self.discount_curve.reset_shift()
-                    return (price_up - price_down) / (2 * shift_size) * 0.0001
-                case "oneside":
-                    price = self.market_price()
-                    shift_method[shift_type](shift_size)
-                    price_shift = self.market_price()
-                    self.discount_curve.reset_shift()
-                    return (price_shift - price) / shift_size * 0.0001
-                case _:
-                    raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
+        self.discount_curve.reset_shift()
+        self._calculate_swap_rate()
+        match kind:
+            case "symmetric":
+                shift_method[shift_type](shift_size)
+                price_up = self.market_price()
+                self.discount_curve.reset_shift()
+                shift_method[shift_type](-shift_size)
+                price_down = self.market_price()
+                self.discount_curve.reset_shift()
+                return (price_up - price_down) / (2 * shift_size) * 0.0001
+            case "oneside":
+                price = self.market_price()
+                shift_method[shift_type](shift_size)
+                price_shift = self.market_price()
+                self.discount_curve.reset_shift()
+                return (price_shift - price) / shift_size * 0.0001
+            case _:
+                raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
 
 
 class FixedRateBond:
@@ -701,7 +701,7 @@ class FixedRateBond:
                                             "cleanPrice": (risk_adj_dirty - accrued_interest).item()}}
         return prices
 
-    def key_rate_dv01(self, shifrt_size=0.0001):
+    def key_rate_dv01(self, shift_size=0.0001, kind="symmetric") -> dict:
         """
         Calculate the Key Rate DV01 (KRD) of the bond by shocking, one at a time, each node of
         the underlying SpotRateCurve's raw tenor grid (spot_rates_data) and re-pricing the bond
@@ -709,14 +709,17 @@ class FixedRateBond:
         itself, not hardcoded — whatever nodes are present in 'spot_rates_data' are the ones
         shocked. Requires the bond's discount_curve to be built on a SpotRateCurve (i.e.
         discount_curve.rate_curve must expose 'spot_rates_data').
- 
+     
         Each node is shocked independently from a clean copy of the original curve data — the
         curve is never left in a shocked state between iterations, avoiding stale-state bugs.
-        The base price is computed once, before the loop, on the unshocked curve, and the curve
-        is restored to its original state once at the end.
- 
+        The curve is restored to its original state once at the end.
+     
         Args:
             shift_size (float): the per-node shock size to apply, default is 1 basis point (0.0001).
+            kind (str): finite difference approximation type — 'symmetric' shocks the node both up
+                       and down and takes the centered difference (more accurate, O(h^2) error,
+                       2 reprices per node); 'oneside' shocks the node only upward and compares
+                       against the unshocked base price (faster, O(h) error, 1 reprice per node).
         Returns:
             dict mapping each curve node's maturity date to the corresponding key rate DV01
             (price sensitivity to a 1bp move at that specific node, expressed per basis point).
