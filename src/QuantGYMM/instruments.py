@@ -730,30 +730,30 @@ class FixedRateBond:
         original_data = sr_curve.spot_rates_data.copy() 
         krd = {}
         match kind:
-        case "symmetric":
-            for tenor_date in original_data.index:
-                up = original_data.copy()
-                up.loc[tenor_date] += shift_size
-                sr_curve.spot_rates_data = up
-                price_up = self.prices()[price_key]["dirtyPrice"]
- 
-                down = original_data.copy()
-                down.loc[tenor_date] -= shift_size
-                sr_curve.spot_rates_data = down
-                price_down = self.prices()[price_key]["dirtyPrice"]
- 
-                krd[tenor_date] = (price_up - price_down) / (2 * shift_size) * 0.0001
-        case "oneside":
-            price_base = self.prices()[price_key]["dirtyPrice"]
-            for tenor_date in original_data.index:
-                shocked = original_data.copy()
-                shocked.loc[tenor_date] += shift_size
-                sr_curve.spot_rates_data = shocked
-                price_shocked = self.prices()[price_key]["dirtyPrice"]
- 
-                krd[tenor_date] = (price_shocked - price_base) / shift_size * 0.0001
-        case _:
-            raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
+            case "symmetric":
+                for tenor_date in original_data.index:
+                    up = original_data.copy()
+                    up.loc[tenor_date] += shift_size
+                    sr_curve.spot_rates_data = up
+                    price_up = self.prices()[price_key]["dirtyPrice"]
+     
+                    down = original_data.copy()
+                    down.loc[tenor_date] -= shift_size
+                    sr_curve.spot_rates_data = down
+                    price_down = self.prices()[price_key]["dirtyPrice"]
+     
+                    krd[tenor_date] = (price_up - price_down) / (2 * shift_size) * 0.0001
+            case "oneside":
+                price_base = self.prices()[price_key]["dirtyPrice"]
+                for tenor_date in original_data.index:
+                    shocked = original_data.copy()
+                    shocked.loc[tenor_date] += shift_size
+                    sr_curve.spot_rates_data = shocked
+                    price_shocked = self.prices()[price_key]["dirtyPrice"]
+     
+                    krd[tenor_date] = (price_shocked - price_base) / shift_size * 0.0001
+            case _:
+                raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
  
         sr_curve.spot_rates_data = original_data
         return krd
