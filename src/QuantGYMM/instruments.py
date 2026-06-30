@@ -202,101 +202,34 @@ class FloatingRateBond:
         Returns:
             The estimated bond DV01.
         """
+        
+        price_key = "riskAdjustedValue" if self._cds_spread else "riskFreeValue"
+        shift_method = {
+            "parallel": self.pricer.discount_curve.apply_parallel_shift,
+            "slope": self.pricer.discount_curve.apply_slope_shift,
+            "curvature": self.pricer.discount_curve.apply_curvature_shift,
+        }
+        if shift_type not in shift_method:
+            raise ValueError("Admitted shift type are: 'parallel', 'slope' or 'curvature'.")
+
         self.pricer.discount_curve.reset_shift()
-        if self._cds_spread:
-            match kind:
-                case "symmetric":
-                    match shift_type:
-                        case "parallel":
-                            self.pricer.discount_curve.apply_parallel_shift(shift_size)
-                            price_up_shift = self.prices()["riskAdjustedValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.reset_shift()
-                            self.pricer.discount_curve.apply_parallel_shift(-shift_size)
-                            price_down_shift = self.prices()["riskAdjustedValue"]["dirtyPrice"]
-                        case "slope":
-                            self.pricer.discount_curve.apply_slope_shift(shift_size)
-                            price_up_shift = self.prices()["riskAdjustedValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.reset_shift()
-                            self.pricer.discount_curve.apply_slope_shift(-shift_size)
-                            price_down_shift = self.prices()["riskAdjustedValue"]["dirtyPrice"]
-                        case "curvature":
-                            self.pricer.discount_curve.apply_curvature_shift(shift_size)
-                            price_up_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.reset_shift()
-                            self.pricer.discount_curve.apply_curvature_shift(-shift_size)
-                            price_down_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case _:
-                            raise ValueError("Admitted shift type are: 'parallel', 'slope' or 'curvature'.")
-                    self.pricer.discount_curve.reset_shift()
-                    return (price_up_shift - price_down_shift) / (2 * shift_size) * 0.0001
-                case "oneside":
-                    match shift_type:
-                        case "parallel":
-                            price = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.apply_parallel_shift(shift_size)
-                            price_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case "slope":
-                            price = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.apply_slope_shift(shift_size)
-                            price_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case "curvature":
-                            price = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.reset_shift()
-                            self.pricer.discount_curve.apply_curvature_shift(shift_size)
-                            price_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case _:
-                            raise ValueError("Admitted shift types are: 'parallel', 'slope' or 'curvature'.")
-                    self.pricer.discount_curve.reset_shift()
-                    return (price_shift - price) / shift_size * 0.0001
-                case _:
-                    raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
-        else:
-            match kind:
-                case "symmetric":
-                    match shift_type:
-                        case "parallel":
-                            self.pricer.discount_curve.apply_parallel_shift(shift_size)
-                            price_up_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.reset_shift()
-                            self.pricer.discount_curve.apply_parallel_shift(-shift_size)
-                            price_down_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case "slope":
-                            self.pricer.discount_curve.apply_slope_shift(shift_size)
-                            price_up_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.reset_shift()
-                            self.pricer.discount_curve.apply_slope_shift(-shift_size)
-                            price_down_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case "curvature":
-                            self.pricer.discount_curve.apply_curvature_shift(shift_size)
-                            price_up_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.reset_shift()
-                            self.pricer.discount_curve.apply_curvature_shift(-shift_size)
-                            price_down_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case _:
-                            raise ValueError("Admitted shift type are: 'parallel', 'slope' or 'curvature'.")
-                    self.pricer.discount_curve.reset_shift()
-                    return (price_up_shift - price_down_shift) / (2 * shift_size) * 0.0001
-                case "oneside":
-                    match shift_type:
-                        case "parallel":
-                            price = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.apply_parallel_shift(shift_size)
-                            price_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case "slope":
-                            price = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.apply_slope_shift(shift_size)
-                            price_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case "curvature":
-                            price = self.prices()["riskFreeValue"]["dirtyPrice"]
-                            self.pricer.discount_curve.reset_shift()
-                            self.pricer.discount_curve.apply_curvature_shift(shift_size)
-                            price_shift = self.prices()["riskFreeValue"]["dirtyPrice"]
-                        case _:
-                            raise ValueError("Admitted shift types are: 'parallel', 'slope' or 'curvature'.")
-                    self.pricer.discount_curve.reset_shift()
-                    return (price_shift - price) / shift_size * 0.0001
-                case _:
-                    raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
+        match kind:
+            case "symmetric":
+                shift_method[shift_type](shift_size)
+                price_up = self.prices()[price_key]["dirtyPrice"]
+                self.pricer.discount_curve.reset_shift()
+                shift_method[shift_type](-shift_size)
+                price_down = self.prices()[price_key]["dirtyPrice"]
+                self.pricer.discount_curve.reset_shift()
+                return (price_up - price_down) / (2 * shift_size) * 0.0001
+            case "oneside":
+                price = self.prices()[price_key]["dirtyPrice"]
+                shift_method[shift_type](shift_size)
+                price_shift = self.prices()[price_key]["dirtyPrice"]
+                self.pricer.discount_curve.reset_shift()
+                return (price_shift - price) / shift_size * 0.0001
+            case _:
+                raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")        
 
     def set_hedging_instruments(self, instruments) -> None:
         """
@@ -579,54 +512,33 @@ class VanillaSwap:
         Returns:
             The estimated bond DV01.
         """
-        self.discount_curve.reset_shift()
-        self._calculate_swap_rate()
-        match kind:
-            case "symmetric":
-                match shift_type:
-                    case "parallel":
-                        self.discount_curve.apply_parallel_shift(shift_size)
-                        price_up_shift = self.market_price()
-                        self.discount_curve.reset_shift()
-                        self.discount_curve.apply_parallel_shift(-shift_size)
-                        price_down_shift = self.market_price()
-                    case "slope":
-                        self.discount_curve.apply_slope_shift(shift_size)
-                        price_up_shift = self.market_price()
-                        self.discount_curve.reset_shift()
-                        self.discount_curve.apply_slope_shift(-shift_size)
-                        price_down_shift = self.market_price()
-                    case "curvature":
-                        self.discount_curve.apply_curvature_shift(shift_size)
-                        price_up_shift = self.market_price()
-                        self.discount_curve.reset_shift()
-                        self.discount_curve.apply_curvature_shift(-shift_size)
-                        price_down_shift = self.market_price()
-                    case _:
-                        raise ValueError("Admitted shift type are: 'parallel', 'slope' or 'curvature'.")
-                self.discount_curve.reset_shift()
-                return (price_up_shift - price_down_shift) / (2 * shift_size) * 0.0001
-            case "oneside":
-                match shift_type:
-                    case "parallel":
-                        price = self.market_price()
-                        self.discount_curve.apply_parallel_shift(shift_size)
-                        price_shift = self.market_price()
-                    case "slope":
-                        price = self.market_price()
-                        self.discount_curve.apply_slope_shift(shift_size)
-                        price_shift = self.market_price()
-                    case "curvature":
-                        price = self.market_price()
-                        self.discount_curve.reset_shift()
-                        self.discount_curve.apply_curvature_shift(shift_size)
-                        price_shift = self.market_price()
-                    case _:
-                        raise ValueError("Admitted shift types are: 'parallel', 'slope' or 'curvature'.")
-                self.discount_curve.reset_shift()
-                return (price_shift - price) / shift_size * 0.0001
-            case _:
-                raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
+        shift_method = {
+                "parallel": self.discount_curve.apply_parallel_shift,
+                "slope": self.discount_curve.apply_slope_shift,
+                "curvature": self.discount_curve.apply_curvature_shift,
+            }
+            if shift_type not in shift_method:
+                raise ValueError("Admitted shift type are: 'parallel', 'slope' or 'curvature'.")
+        
+            self.discount_curve.reset_shift()
+            self._calculate_swap_rate()
+            match kind:
+                case "symmetric":
+                    shift_method[shift_type](shift_size)
+                    price_up = self.market_price()
+                    self.discount_curve.reset_shift()
+                    shift_method[shift_type](-shift_size)
+                    price_down = self.market_price()
+                    self.discount_curve.reset_shift()
+                    return (price_up - price_down) / (2 * shift_size) * 0.0001
+                case "oneside":
+                    price = self.market_price()
+                    shift_method[shift_type](shift_size)
+                    price_shift = self.market_price()
+                    self.discount_curve.reset_shift()
+                    return (price_shift - price) / shift_size * 0.0001
+                case _:
+                    raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
 
 
 class FixedRateBond:
@@ -789,6 +701,61 @@ class FixedRateBond:
                                             "cleanPrice": (risk_adj_dirty - accrued_interest).item()}}
         return prices
 
+    def key_rate_dv01(self, shifrt_size=0.0001):
+        """
+        Calculate the Key Rate DV01 (KRD) of the bond by shocking, one at a time, each node of
+        the underlying SpotRateCurve's raw tenor grid (spot_rates_data) and re-pricing the bond
+        with the shocked curve. The tenors used are determined automatically from the curve
+        itself, not hardcoded — whatever nodes are present in 'spot_rates_data' are the ones
+        shocked. Requires the bond's discount_curve to be built on a SpotRateCurve (i.e.
+        discount_curve.rate_curve must expose 'spot_rates_data').
+ 
+        Each node is shocked independently from a clean copy of the original curve data — the
+        curve is never left in a shocked state between iterations, avoiding stale-state bugs.
+        The base price is computed once, before the loop, on the unshocked curve, and the curve
+        is restored to its original state once at the end.
+ 
+        Args:
+            shift_size (float): the per-node shock size to apply, default is 1 basis point (0.0001).
+        Returns:
+            dict mapping each curve node's maturity date to the corresponding key rate DV01
+            (price sensitivity to a 1bp move at that specific node, expressed per basis point).
+        """
+        price_key     = "riskAdjustedValue" if self._cds_spread else "riskFreeValue"
+        sr_curve      = self.discount_curve.rate_curve
+        price_base    = self.prices()[price_key]["dirtyPrice"]
+        original_data = sr_curve.spot_rates_data.copy() 
+        krd = {}
+        match kind:
+        case "symmetric":
+            for tenor_date in original_data.index:
+                up = original_data.copy()
+                up.loc[tenor_date] += shift_size
+                sr_curve.spot_rates_data = up
+                price_up = self.prices()[price_key]["dirtyPrice"]
+ 
+                down = original_data.copy()
+                down.loc[tenor_date] -= shift_size
+                sr_curve.spot_rates_data = down
+                price_down = self.prices()[price_key]["dirtyPrice"]
+ 
+                krd[tenor_date] = (price_up - price_down) / (2 * shift_size) * 0.0001
+        case "oneside":
+            price_base = self.prices()[price_key]["dirtyPrice"]
+            for tenor_date in original_data.index:
+                shocked = original_data.copy()
+                shocked.loc[tenor_date] += shift_size
+                sr_curve.spot_rates_data = shocked
+                price_shocked = self.prices()[price_key]["dirtyPrice"]
+ 
+                krd[tenor_date] = (price_shocked - price_base) / shift_size * 0.0001
+        case _:
+            raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
+ 
+        sr_curve.spot_rates_data = original_data
+        return krd
+    
+    
     def sensitivity(self, shift_type="parallel", shift_size=0.01, kind="symmetric") -> float:
         """
         Calculate the DV01 of the bond to different types of curve shift by means of finite difference approximation.
