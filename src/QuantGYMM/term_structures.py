@@ -637,7 +637,7 @@ class SpotRateCurve:
             numpy.ndarray of interpolated spot rates, same order as 'dates'.
         """
         if not isinstance(dates, (pd.DatetimeIndex, pd.Series)):
-            dates = pd.DatetimeIndex(pd.atleast_1d(dates))
+            dates = pd.DatetimeIndex(np.atleast_1d(dates))
         if self._interpolator is None:
             day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
             self._interpolator = scipy.interpolate.interp1d(day_since_start, self.sr.spotRate,
