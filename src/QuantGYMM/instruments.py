@@ -619,6 +619,12 @@ class FixedRateBond:
             self._get_survival_prob()
         return self._survival_probabilities
 
+    @property
+    def coupons_history(self):
+        if self._coupon_history is None:
+            self._coupon_history = self.get_coupon_history()
+        return self._coupon_history
+
     def __repr__(self):
         return f"FixedRateBond(faceAmount={self.face_amount}, couponRate={self.coupon_rate}, " \
                f"maturity={self.schedule.schedule['paymentDate'][-1].strftime(format('%Y-%m-%d'))}, " \
@@ -666,13 +672,18 @@ class FixedRateBond:
         )
         return self._cash_flows
 
+
+    def get_coupon_history(self) -> dict
+        pass
+        
+    
     def prices(self) -> dict:
         """
         Compute fair market price as the sum of discounted future cash flows.
         Returns:
             dict with risk-free (and, if a CDS spread/recovery rate are set, risk-adjusted) dirty/clean price.
         """
-        df = self.discount_curve.discount_factors.loc[self.cash_flows.couponEnd].to_numpy().squeeze()
+        df = self.discount_curve.discount_factor_at(self.cash_flows.couponEnd)
         start, end = self.cash_flows.couponStart.iloc[0], self.cash_flows.couponEnd.iloc[0]
         accrued_interest = self.coupon_rate * self.face_amount * (
             self.evaluation_date + BDay(2) - start).days / (end - start).days
@@ -759,6 +770,7 @@ class FixedRateBond:
                 raise ValueError("Admitted kind types are: 'symmetric', 'oneside'")
  
         sr_curve.spot_rates_data = original_data
+        self.discount_curve.rate_curve = sr_curve
         return krd
     
     
