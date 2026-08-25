@@ -1474,7 +1474,10 @@ class CallableBond:
 
         call_sched = self.call_schedule
         if len(call_sched) > 1:
-            raise NotImplementedError("Bermudan callables not supported yet; use method='worst'.")
+            raise NotImplementedError(
+                "The Jamshidian decomposition prices a single exercise date only. "
+                "For a Bermudan schedule use method='tree'."
+            )
 
         call_date = call_sched.index[0]
         K = call_sched.iloc[0] / 100.0

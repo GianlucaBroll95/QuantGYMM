@@ -190,6 +190,15 @@ def test_a_floating_underlying_is_refused(dc, call_dates):
         callable_bond.prices(method="tree")
 
 
+def test_the_closed_form_refuses_a_bermudan_and_points_at_the_tree(bond, call_dates):
+    """Jamshidian prices one exercise date. Refusing is correct; what would be
+    wrong is falling back silently to a different model."""
+    callable_bond = CallableBond(bond(), pd.Series([100.0] * 3, index=call_dates[:3]),
+                                 volatility=0.01)
+    with pytest.raises(NotImplementedError, match="method='tree'"):
+        callable_bond.prices(method="hw")
+
+
 def test_an_unknown_method_is_refused(bond, call_dates):
     callable_bond = CallableBond(bond(), pd.Series([100.0], index=call_dates[:1]),
                                  volatility=0.01)

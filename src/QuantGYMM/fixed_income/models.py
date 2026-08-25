@@ -274,11 +274,25 @@ def hw_trinomial_tree(dt, n_steps, a, sigma, discount_factors):
     if len(discount_factors) != n_steps + 1:
         raise ValueError(f"'discount_factors' must have {n_steps + 1} entries, got {len(discount_factors)}.")
 
+    # dx = sigma sqrt(3 dt) is not arbitrary. Any multiple matches the first two
+    # moments, given suitable probabilities; this one also matches the FOURTH
+    # moment of the normal exactly (pu = pd = 1/6, pm = 2/3 give 3 sigma^4 dt^2,
+    # the normal's kurtosis), so each step is more accurate and the tree
+    # converges faster. With sqrt(2 dt) the fourth moment would come out a third
+    # too small.
     dx = sigma * np.sqrt(3.0 * dt)
-    # Hull-White's threshold: beyond it the normal branching would produce a
-    # negative probability, so the top of the tree branches downwards and the
-    # bottom upwards.
-    j_max = int(np.ceil(0.184 / (a * dt)))
+
+    # Threshold at which the branching has to switch: above it the normal
+    # branching would need a negative probability, so the top of the tree
+    # branches downwards and the bottom upwards.
+    #
+    # The number is a consequence of dx, not a fitted constant. With downward
+    # branching pm = -1/3 - eta^2 + 2 eta, whose roots are 1 -/+ sqrt(2/3);
+    # below the lower one no valid set of probabilities exists. The 2/3 is pm at
+    # the central node, which comes from the sqrt(3 dt) choice above - change one
+    # and the other has to change with it (sqrt(2 dt) would give 1 - sqrt(1/2)).
+    branching_threshold = 1.0 - np.sqrt(2.0 / 3.0)   # 0.1835...
+    j_max = int(np.ceil(branching_threshold / (a * dt)))
 
     j_slices, prob_slices, k_slices = [], [], []
     for i in range(n_steps):
