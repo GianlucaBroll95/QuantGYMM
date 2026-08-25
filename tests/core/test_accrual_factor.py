@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from ..utils import accrual_factor
+from QuantGYMM.utils import accrual_factor
 
 
 @pytest.mark.parametrize("dcc, start, end, expected", [

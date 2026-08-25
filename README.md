@@ -5,13 +5,13 @@ This a simple package to deal with bond pricing and bond hedging. This project w
 ## Getting started
 
 
-Before installing 'QuantGYMM', be sure that you have a Python version >= 3.9 installed in you computer/local enviroment. If you are using a conda, I suggest to create a virtual enviroment and install a suitable Python version. 
+Before installing 'QuantGYMM', be sure that you have a Python version >= 3.12 installed in you computer/local enviroment. If you are using a conda, I suggest to create a virtual enviroment and install a suitable Python version. 
 
 ### Suggested Set Up:
 
 1) Create virtual enviroment and activate it:
 ```
-conda create --name [your_env_name_here] python=3.10
+conda create --name [your_env_name_here] python=3.12
 conda activate [your_env_name_here]
 ```
 2) Install Jypyter (optional):

@@ -138,6 +138,7 @@ class DiscountCurve:
         self._sr = None
         self._discount_factors = None
         self._spot_rates = None
+        self._rate_interpolator = None
         self._shift = 0
         self._shift_flag = False
         self.dcc = dcc
@@ -158,6 +159,7 @@ class DiscountCurve:
             self._starting_date = rate_curve.trade_date + BDay(rate_curve.spot_lag)
             self._discount_factors = None
             self._spot_rates = None
+            self._rate_interpolator = None
             self._get_df_from_swap_rate()
             self._get_spot()
         elif isinstance(rate_curve, (SpotRateCurve, EuriborCurve)):
@@ -166,18 +168,21 @@ class DiscountCurve:
             self._starting_date = rate_curve.trade_date + BDay(rate_curve.spot_lag)
             self._discount_factors = None
             self._spot_rates = None
-            self._sr = rate_curve.sr
+            self._rate_interpolator = None
+            self._sr = None
 
         else:
             raise ValueError("You need to pass a 'SwapRateCurve' object or a 'SpotRateCurve.")
-
 
     def discount_factor_at(self, dates):
         """
         Compute discount factors only at the requested date(s), bypassing the cached daily
         'discount_factors' grid. Delegates to 'rate_curve.rate_at(dates)' for the lean,
-        on-demand spot rate interpolation. Useful for repeated targeted evaluations (e.g.
-        key rate sensitivity shocks) where only a handful of dates matter.
+        on-demand spot rate interpolation (falling back to the curve's own 'rate_at' when
+        the underlying rate curve does not expose one, i.e. SwapRateCurve). Useful for
+        repeated targeted evaluations (e.g. key rate sensitivity shocks) where only a
+        handful of dates matter. When a shift is active ('apply_*_shift'), the shifted
+        daily grid is read instead so shifts are never silently ignored.
         Args:
             dates (pandas.Timestamp | pandas.DatetimeIndex | Iterable[pandas.Timestamp]): date(s)
                                                                                           to evaluate.
@@ -186,7 +191,10 @@ class DiscountCurve:
         """
         if not isinstance(dates, (pd.DatetimeIndex, pd.Series)):
             dates = pd.DatetimeIndex(np.atleast_1d(dates))
-        spot_rate = self.rate_curve.rate_at(dates)
+        if self._shift_flag:
+            return self.discount_factors.loc[dates].to_numpy()[:, 0]
+        rate_source = self.rate_curve if hasattr(self.rate_curve, "rate_at") else self
+        spot_rate = rate_source.rate_at(dates)
         term = accrual_factor(self.dcc, self.trade_date, dates)
         match self.compounding:
             case "simple":
@@ -195,7 +203,28 @@ class DiscountCurve:
                 return 1 / (1 + spot_rate) ** term
             case "continuous":
                 return np.exp(-spot_rate * term)
-    
+
+    def rate_at(self, dates) -> np.ndarray:
+        """
+        Interpolate the curve's own bootstrapped spot rate nodes ('sr') at the requested
+        date(s). Used by 'discount_factor_at' as a fallback when the underlying rate curve
+        does not expose a 'rate_at' method (i.e. SwapRateCurve).
+        Args:
+            dates (pandas.Timestamp | pandas.DatetimeIndex | Iterable[pandas.Timestamp]): date(s)
+                                                                                          to evaluate.
+        Returns:
+            numpy.ndarray of interpolated spot rates, same order as 'dates'.
+        """
+        if not isinstance(dates, (pd.DatetimeIndex, pd.Series)):
+            dates = pd.DatetimeIndex(np.atleast_1d(dates))
+        if self._rate_interpolator is None:
+            day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
+            self._rate_interpolator = scipy.interpolate.interp1d(day_since_start, self.sr.spotRate,
+                                                                 kind=self.interpolation,
+                                                                 fill_value="extrapolate")
+        days_requested = np.array([d.days for d in dates - self._starting_date])
+        return self._rate_interpolator(days_requested)
+
     @property
     def discount_factors(self):
         if self._discount_factors is None:
@@ -215,6 +244,7 @@ class DiscountCurve:
         if isinstance(interpolation, str):
             self._discount_factors = None
             self._spot_rates = None
+            self._rate_interpolator = None
             self._interpolation = interpolation
         else:
             raise ValueError("Interpolation must be a string.")
@@ -231,6 +261,8 @@ class DiscountCurve:
 
     @property
     def sr(self):
+        if self._sr is None and isinstance(self.rate_curve, (SpotRateCurve, EuriborCurve)):
+            self._sr = self.rate_curve.sr
         return self._sr
 
     @property
@@ -252,6 +284,7 @@ class DiscountCurve:
         self._discount_factors = None
         self._spot_rates["spotRate"] = self.spot_rates.spotRate - self._shift
         self._shift = 0
+        self._shift_flag = False
 
     def apply_parallel_shift(self, shift=0.0001) -> None:
         """
@@ -306,9 +339,10 @@ class DiscountCurve:
         self._discount_factors = None
         maturity = [self._starting_date] + df.index.to_list()
         afs = accrual_factor("ACT/365", maturity)
-        annuity = np.array([0])
+        annuity = [0.0]
         for d, af in zip(df, afs):
-            annuity = np.append(annuity, annuity[-1] + d * af)
+            annuity.append(annuity[-1] + d * af)
+        annuity = np.asarray(annuity)
         self._df = pd.DataFrame(
             {"maturity": maturity[1:], "annuity": annuity[1:], "discountFactor": df,
              "accrualFactor": afs}).reset_index(drop=True)
@@ -334,10 +368,12 @@ class DiscountCurve:
     def _get_df_from_swap_rate(self):
         maturity = [self._starting_date] + self.rate_curve.interpolated_rates.term.to_list()
         afs = accrual_factor(self.rate_curve.dcc, maturity)
-        annuity, df = np.array([0]), np.array([1])
+        annuity, df = [0.0], [1.0]
         for sr, af in zip(self.rate_curve.interpolated_rates.interpolatedSwapRate, afs):
-            df = np.append(df, (1 - annuity[-1] * sr) / (1 + af * sr))
-            annuity = np.append(annuity, annuity[-1] + df[-1] * af)
+            df.append((1 - annuity[-1] * sr) / (1 + af * sr))
+            annuity.append(annuity[-1] + df[-1] * af)
+        df = np.asarray(df)
+        annuity = np.asarray(annuity)
         self._df = pd.DataFrame(
             {"maturity": maturity[1:], "annuity": annuity[1:], "discountFactor": df[1:],
              "accrualFactor": afs})
@@ -380,6 +416,7 @@ class DiscountCurve:
             self._sr = pd.concat([other.sr, self.sr],
                                  ignore_index=True).drop_duplicates("maturity", keep="first").sort_values("maturity")
             self._spot_rates = None
+            self._rate_interpolator = None
         else:
             raise ValueError(f"DiscountCurve can be added only to EuriborCurve or SpotRateCurve."
                              f" Got '{other.__class__.__name__}'.")
@@ -400,8 +437,8 @@ class EuriborCurve:
                 "1 week": DateOffset(days=7), "1 month": DateOffset(months=1), "3 month": DateOffset(months=3),
                 "6 month": DateOffset(months=6), "12 month": DateOffset(months=12)}
 
-    trade_date = Date(sterilize_attr=["_spot_rates", "_discount_factors", "_sr"])
-    euribor = DataFrame(sterilize_attr=["_spot_rates", "_discount_factors", "_sr"])
+    trade_date = Date(sterilize_attr=["_spot_rates", "_discount_factors", "_sr", "_interpolator"])
+    euribor = DataFrame(sterilize_attr=["_spot_rates", "_discount_factors", "_sr", "_interpolator"])
 
     def __init__(self, euribor, trade_date, interpolation="cubic"):
         """
@@ -417,6 +454,7 @@ class EuriborCurve:
         self._sr = None
         self._discount_factors = None
         self._spot_rates = None
+        self._interpolator = None
 
     @property
     def spot_lag(self):
@@ -438,7 +476,7 @@ class EuriborCurve:
     def discount_factors(self):
         if self._discount_factors is None:
             self._get_discount_factors()
-            return self._discount_factors
+        return self._discount_factors
 
     @discount_factors.setter
     def discount_factors(self, value):
@@ -488,6 +526,21 @@ class EuriborCurve:
         lm = pd.DataFrame({"maturity": dates, "term": accrual_factor(self._DCC, dates[0], dates)})
         self._spot_rates = pd.concat([lm, spot_rates], ignore_index=True).bfill()
 
+    def rate_at(self, dates) -> np.ndarray:
+        """
+        Fast path to calculate rates without going through the full daily grid.
+        """
+        if not isinstance(dates, (pd.DatetimeIndex, pd.Series)):
+            dates = pd.DatetimeIndex(np.atleast_1d(dates))
+        if self._interpolator is None:
+            day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
+            self._interpolator = scipy.interpolate.interp1d(day_since_start,
+                                                            self.sr.spotRate,
+                                                            kind=self.interpolation,
+                                                            fill_value="extrapolate")
+        days_requested = np.array([d.days for d in dates - self._starting_date])
+        return self._interpolator(days_requested)
+
     def __add__(self, other):
 
         if isinstance(other, (DiscountCurve, SpotRateCurve)):
@@ -505,10 +558,12 @@ class SpotRateCurve:
     Spot rate curve for handling spot rates
     """
     _SPOT_LAG = 2
-    spot_rates_data = DataFrame(index_type=pd.DatetimeIndex, sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
+    spot_rates_data = DataFrame(index_type=pd.DatetimeIndex,
+                                sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
     trade_date = Date(sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
     dcc = DayCountConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
-    business_convention = BusinessConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
+    business_convention = BusinessConvention(
+        sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
     compounding = CompoundingConvention(sterilize_attr=["_spot_rates", "_sr", "_discount_factors", "_interpolator"])
 
     def __init__(self, spot_rates, trade_date, dcc="ACT/365", business_convention="modified_following",
@@ -550,19 +605,25 @@ class SpotRateCurve:
         Returns:
             SpotRateCurve instance.
         """
-        import requests
+        try:
+            import requests
+        except ImportError as err:
+            raise ImportError(
+                "Fetching the ECB yield curve requires the optional dependency 'requests'. "
+                "Install it with: pip install QuantGYMM[ecb]"
+            ) from err
         from io import StringIO
-    
+
         sub_annual = [f"SR_{m}M" for m in (3, 6)]
-        annual     = [f"SR_{y}Y" for y in (1, 2, 3, 5, 7, 10, 15, 20, 30)]
-        tenors     = sub_annual + annual
-        key        = f"B.U2.EUR.4F.G_N_{issuer}.SV_C_YM.{'+'.join(tenors)}"
+        annual = [f"SR_{y}Y" for y in (1, 2, 3, 5, 7, 10, 15, 20, 30)]
+        tenors = sub_annual + annual
+        key = f"B.U2.EUR.4F.G_N_{issuer}.SV_C_YM.{'+'.join(tenors)}"
         trade_date = pd.Timestamp.today() if not trade_date else pd.Timestamp(trade_date)
-        adj_date   = business_adjustment("preceding", trade_date)
-        url        = (f"https://data-api.ecb.europa.eu/service/data/YC/{key}"
-                      f"?startPeriod={adj_date.strftime("%Y-%m-%d")}&endPeriod={adj_date.strftime("%Y-%m-%d")}"
-                     )
-        
+        adj_date = business_adjustment("preceding", trade_date)
+        url = (f"https://data-api.ecb.europa.eu/service/data/YC/{key}"
+               f"?startPeriod={adj_date.strftime("%Y-%m-%d")}&endPeriod={adj_date.strftime("%Y-%m-%d")}"
+               )
+
         r = requests.get(
             url,
             params={"format": "csvdata"},
@@ -570,27 +631,26 @@ class SpotRateCurve:
             timeout=30
         )
         r.raise_for_status()
-        
+
         spot_rates = pd.read_csv(
-            StringIO(r.text), 
+            StringIO(r.text),
             usecols=["TIME_PERIOD", "DATA_TYPE_FM", "OBS_VALUE"]
         )
-    
+
         if spot_rates.empty:
             raise ValueError(f"No ECB observation found on {adj_date.strftime('%Y-%m-%d')}.")
-        
-        spot_rates         = spot_rates.set_index(["DATA_TYPE_FM", "TIME_PERIOD"])["OBS_VALUE"].unstack("TIME_PERIOD") / 100
-        tenor_to_date      = ({f"SR_{m}M": adj_date + pd.DateOffset(months=m) for m in (3, 6)} |
-                              {f"SR_{y}Y": adj_date + pd.DateOffset(months=y * 12) for y in (1, 2, 3, 5, 7, 10, 15, 20, 30)})
-        spot_rates.columns = ["spotRate"]
-        spot_rates.index   = spot_rates.index.map(tenor_to_date)
-        
-        spot_rates.sort_index(inplace=True)
-        
-        return cls(spot_rates, trade_date, dcc=dcc, business_convention=business_convention,
-                       interpolation=interpolation, compounding=compounding)
 
-    
+        spot_rates = spot_rates.set_index(["DATA_TYPE_FM", "TIME_PERIOD"])["OBS_VALUE"].unstack("TIME_PERIOD") / 100
+        tenor_to_date = ({f"SR_{m}M": adj_date + pd.DateOffset(months=m) for m in (3, 6)} |
+                         {f"SR_{y}Y": adj_date + pd.DateOffset(months=y * 12) for y in (1, 2, 3, 5, 7, 10, 15, 20, 30)})
+        spot_rates.columns = ["spotRate"]
+        spot_rates.index = spot_rates.index.map(tenor_to_date)
+
+        spot_rates.sort_index(inplace=True)
+
+        return cls(spot_rates, trade_date, dcc=dcc, business_convention=business_convention,
+                   interpolation=interpolation, compounding=compounding)
+
     @property
     def spot_lag(self):
         return self._SPOT_LAG
@@ -644,7 +704,7 @@ class SpotRateCurve:
                                                             kind=self.interpolation, fill_value="extrapolate")
         days_requested = np.array([d.days for d in dates - self._starting_date])
         return self._interpolator(days_requested)
-    
+
     def _interpolate_spot_rates(self):
         day_since_start = np.array([d.days for d in self.sr.maturity - self._starting_date])
         interpolator = scipy.interpolate.interp1d(day_since_start, self.sr.spotRate, kind=self.interpolation)
@@ -680,7 +740,7 @@ class SpotRateCurve:
                                   ignore_index=True).drop_duplicates("maturity", keep="first").sort_values("maturity")
             other._spot_rates = None
         else:
-            raise ValueError(f"EuriborCurve can be added only to DiscountCurve or SpotRateCurve. "
+            raise ValueError(f"SpotRateCurve can be added only to DiscountCurve or EuriborCurve. "
                              f"Got '{other.__class__.__name__}'.")
         return other
 

@@ -1,4 +1,4 @@
-from ..descriptors import *
+from QuantGYMM.descriptors import *
 import pytest
 import pandas as pd
 import numpy as np
@@ -26,7 +26,8 @@ def instance_class_with_none():
                                  "positive_number": PositiveNumber(none_accepted=True),
                                  "non_negative_integer": NonNegativeInteger(none_accepted=True),
                                  "positive_integer": PositiveInteger(none_accepted=True),
-                                 "float_number": FloatNumber(none_accepted=True)})
+                                 "float_number": FloatNumber(none_accepted=True),
+                                 "string": String(none_accepted=True)})
     return obj()
 
 
@@ -36,7 +37,8 @@ def instance_class_with_none_and_nan():
                                  "positive_number": PositiveNumber(none_accepted=True, return_if_none=np.nan),
                                  "non_negative_integer": NonNegativeInteger(none_accepted=True, return_if_none=np.nan),
                                  "positive_integer": PositiveInteger(none_accepted=True, return_if_none=np.nan),
-                                 "float_number": FloatNumber(none_accepted=True, return_if_none=np.nan)})
+                                 "float_number": FloatNumber(none_accepted=True, return_if_none=np.nan),
+                                 "string": String(none_accepted=True, return_if_none="N/A")})
     return obj()
 
 
@@ -46,13 +48,13 @@ def instance_class_dataframe():
     return obj()
 
 
-@pytest.mark.parametrize("date", ["2023-01-01", pd.to_datetime("2023-01-01")])
+@pytest.mark.parametrize("date", ["2023-01-01", pd.to_datetime("2023-01-01"), "20230101"])
 def test_valid_date(instance_class, date):
     instance_class.date = date
     assert instance_class.date == pd.to_datetime(date)
 
 
-@pytest.mark.parametrize("date", [[1, 2, 3], "2023", "20230101", "hello", 2, False])
+@pytest.mark.parametrize("date", [[1, 2, 3], "2023", "hello", 2, False])
 def test_invalid_date(instance_class, date):
     with pytest.raises(TypeError):
         instance_class.date = date
@@ -196,6 +198,32 @@ def test_invalid_string_convention(instance_class, string):
         instance_class.string = string
 
 
+@pytest.mark.parametrize("string", ["US0378331005", None])
+def test_valid_string_with_none(instance_class_with_none, string):
+    instance_class_with_none.string = string
+    assert instance_class_with_none.string == string
+
+
+@pytest.mark.parametrize("string", [1, False, True, [1, 2]])
+def test_invalid_string_with_none(instance_class_with_none, string):
+    with pytest.raises(TypeError):
+        instance_class_with_none.string = string
+
+
+@pytest.mark.parametrize("string", ["US0378331005", None])
+def test_valid_string_with_none_and_default(instance_class_with_none_and_nan, string):
+    instance_class_with_none_and_nan.string = string
+    if string is None:
+        assert instance_class_with_none_and_nan.string == "N/A"
+    else:
+        assert instance_class_with_none_and_nan.string == string
+
+
+def test_unset_string_reads_as_default(instance_class_with_none, instance_class_with_none_and_nan):
+    assert instance_class_with_none.string is None
+    assert instance_class_with_none_and_nan.string == "N/A"
+
+
 @pytest.mark.parametrize("bool", [True, False])
 def test_valid_bool_convention(instance_class, bool):
     instance_class.bool = bool
@@ -251,8 +279,8 @@ def test_invalid_float_number(instance_class, float_number):
 
 @pytest.mark.parametrize("float_number", [0.1, -0.1, None])
 def test_valid_float_number_with_none(instance_class_with_none, float_number):
-    instance_class.float_number = float_number
-    assert instance_class.float_number == float_number
+    instance_class_with_none.float_number = float_number
+    assert instance_class_with_none.float_number == float_number
 
 @pytest.mark.parametrize("float_number", [0.1, -0.1, None])
 def test_valid_float_number_with_none_and_nan(instance_class_with_none_and_nan, float_number):

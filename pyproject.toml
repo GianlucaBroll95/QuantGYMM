@@ -4,18 +4,45 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "QuantGYMM"
-version = "0.2"
+version = "0.4"
 authors = [
   { name="Gianluca Broll", email="gianluca.broll@gmail.com" },
 ]
 description = "Package for dealing with bond pricing and hedging"
 readme = "README.md"
-requires-python = ">=3.9"
+license = { text = "MIT" }
+# PEP 701 nested f-strings (term_structures.from_ecb) and structural pattern
+# matching require a modern interpreter.
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=2.0",
+    "numpy",
+    "scipy",
+    "python-dateutil",
+    "scikit-learn"
+]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 
+[project.optional-dependencies]
+# SpotRateCurve.from_ecb fetches the ECB yield-curve API
+ecb = ["requests"]
+test = ["pytest"]
+yahoo = ["yfinance"]
+
 [project.urls]
 "Homepage" = "https://github.com/GianlucaBroll95/QuantGYMM"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["QuantGYMM.test*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "network: tests that hit external APIs (deselect with -m 'not network')",
+]

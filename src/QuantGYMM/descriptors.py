@@ -231,16 +231,18 @@ class FloatNumber:
 
 
 class String:
-    def __init__(self, sterilize_attr=None):
+    def __init__(self, sterilize_attr=None, none_accepted=False, return_if_none=None):
         if sterilize_attr is None:
             sterilize_attr = []
         self.sterilize_attr = sterilize_attr
+        self.none_accepted = none_accepted
+        self.return_if_none = return_if_none
 
     def __set_name__(self, owner, name):
         self.property_name = name
 
     def __set__(self, instance, value):
-        if isinstance(value, str):
+        if isinstance(value, str) or (value is None and self.none_accepted):
             instance.__dict__[self.property_name] = value
         else:
             raise TypeError(f"Wrong type for '{self.property_name}'. Allowed choices are string.")
@@ -251,6 +253,8 @@ class String:
     def __get__(self, instance, owner):
         if instance is None:
             return self
+        if instance.__dict__.get(self.property_name, None) is None:
+            return self.return_if_none
         return instance.__dict__.get(self.property_name, None)
 
 

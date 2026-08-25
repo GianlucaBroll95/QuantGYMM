@@ -1,9 +1,9 @@
-from .term_structures import DiscountCurve
+from ..term_structures import DiscountCurve
 import pandas as pd
 import numpy as np
 import scipy
 from scipy.stats import norm
-from .utils import *
+from ..utils import *
 import warnings
 from pandas.tseries.offsets import DateOffset, BDay
 
@@ -77,57 +77,79 @@ class Pricer:
     def _get_forward_rates(self):
         reset_dates = self.bond.schedule.schedule["resetDate"]
         future_resets = reset_dates[reset_dates > self.bond.evaluation_date]
-        df1 = self.discount_curve.discount_factors.loc[future_resets]
-        df2 = self.discount_curve.discount_factors.loc[
-            business_adjustment("modified_following",
-                                future_resets + DateOffset(months=12 / self.bond.schedule.frequency))]
-        af = accrual_factor(self.discount_curve.dcc, df1.index.to_list(), df2.index.to_list())
+        df2_dates = pd.DatetimeIndex(business_adjustment("modified_following",
+                                                         future_resets + DateOffset(
+                                                             months=12 / self.bond.schedule.frequency)))
+        df1 = self.discount_curve.discount_factor_at(future_resets)
+        df2 = self.discount_curve.discount_factor_at(df2_dates)
+        af = accrual_factor(self.discount_curve.dcc, list(future_resets), list(df2_dates))
         match self.discount_curve.compounding:
             case "simple":
-                self._forward_rates = ((df1.to_numpy() / df2.to_numpy() - 1) / af.reshape(-1, 1)).squeeze()
-                # self._forward_rates = (df1.divide(df2.to_numpy()) - 1).divide(af, axis=0).to_numpy().squeeze()
+                self._forward_rates = (df1 / df2 - 1) / af
             case "continuous":
-                self._forward_rates = (np.log(df1.to_numpy() / df2.to_numpy()) / af.reshape(-1, 1)).squeeze()
-                # self._forward_rates = np.log(df1.divide(df2.to_numpy())).divide(af, axis=0).to_numpy().squeeze()
+                self._forward_rates = np.log(df1 / df2) / af
             case "annually_compounded":
-                self._forward_rates = ((df1.to_numpy() / df2.to_numpy()) ** (1 / af.reshape(-1, 1)) - 1).squeeze()
-                # self._forward_rates = ((df1.divide(df2.to_numpy())).pow(1 / af, axis=0) - 1).to_numpy().squeeze()
+                self._forward_rates = (df1 / df2) ** (1 / af) - 1
 
     def _get_current_coupon(self):
         reset_dates = self.bond.schedule.schedule["resetDate"]
-        reset = reset_dates[reset_dates <= self.bond.evaluation_date][-1]
-        reset_rate = self.bond.historical_euribor.loc[reset]
-        start = self.bond.schedule.schedule["startingDate"][reset_dates <= self.bond.evaluation_date][-1]
-        end = self.bond.schedule.schedule["paymentDate"][reset_dates <= self.bond.evaluation_date][-1]
-        af = accrual_factor(self.bond.dcc, start, end)
-        coupon_rate = reset_rate + self.bond.spread
-        self._current_coupon = pd.DataFrame({"resetDate": reset, "couponStart": start, "couponEnd": end,
+        past_mask = reset_dates <= self.bond.evaluation_date
+        if not past_mask.any():
+            raise ValueError("Evaluation date precedes the first reset date: no current coupon exists yet.")
+        reset = reset_dates[past_mask][-1]
+
+        start = self.bond.schedule.schedule["startingDate"][past_mask][-1]
+        end = self.bond.schedule.schedule["paymentDate"][past_mask][-1]
+        af = accrual_factor(self.bond.dcc, start, end).item()
+
+        if self.bond.current_coupon_rate is not None:
+            coupon_rate = self.bond.current_coupon_rate
+            reset_rate = coupon_rate - self.bond.spread
+        else:
+            reset_rate = self.bond.historical_euribor.loc[reset].item()
+            coupon_rate = reset_rate + self.bond.spread
+
+        self._current_coupon = pd.DataFrame([{"resetDate": reset, "couponStart": start, "couponEnd": end,
                                              "accrualFactor": af, "resetRate": reset_rate, "spread": self.bond.spread,
                                              "couponRate": coupon_rate,
-                                             "coupon": coupon_rate * af * self.bond.face_amount})
+                                             "coupon": coupon_rate * af * self.bond.face_amount}])
 
     def _get_expected_coupons(self):
+
         if self.bond.cap is not np.nan and self.bond.floor is not np.nan:
             raise ValueError("'Pricer' can't deal with caps and floor. Set a proper pricer.")
+
         reset_dates = self.bond.schedule.schedule["resetDate"]
         resets = reset_dates[reset_dates > self.bond.evaluation_date]
         starts = self.bond.schedule.schedule["startingDate"][reset_dates > self.bond.evaluation_date]
         payments = self.bond.schedule.schedule["paymentDate"][reset_dates > self.bond.evaluation_date]
         af = accrual_factor(self.bond.dcc, starts, payments)
-        index = pd.RangeIndex(self.bond.coupon_history.index[-1] + 1,
-                              self.bond.coupon_history.shape[0] + len(payments) + 2, name="couponNumber")
-        self._expected_coupons = pd.concat([self.current_coupon, pd.DataFrame(
-            {"resetDate": resets, "couponStart": starts, "couponEnd": payments, "accrualFactor": af,
-             "resetRate": self.forward_rates, "spread": self.bond.spread,
-             "couponRate": self.forward_rates + self.bond.spread,
-             "coupon": (self.forward_rates + self.bond.spread) * af * self.bond.face_amount})],
-                                           ignore_index=True).set_index(index).replace(np.nan, "-")
+
+        if self.bond._historical_euribor is not None and len(self.bond.coupons_history) > 0:
+            start_idx = self.bond.coupons_history.index[-1] + 1
+            n_hist = self.bond.coupons_history.shape[0]
+        else:
+            start_idx = 1
+            n_hist = 0
+
+        index = pd.RangeIndex(start_idx, n_hist + len(payments) + 2, name="couponNumber")
+
+        dfs = [self.current_coupon]
+        if len(resets) > 0:
+            dfs.append(pd.DataFrame(
+                {"resetDate": resets, "couponStart": starts, "couponEnd": payments, "accrualFactor": af,
+                "resetRate": self.forward_rates, "spread": self.bond.spread,
+                "couponRate": self.forward_rates + self.bond.spread,
+                "coupon": (self.forward_rates + self.bond.spread) * af * self.bond.face_amount}))
+
+
+        self._expected_coupons = pd.concat(dfs, ignore_index=True).set_index(index).replace(np.nan, "-")
 
     def present_value(self) -> dict:
         """
         Calculate present value of the sum of the expected cash flows.
         """
-        df = self.discount_curve.discount_factors.loc[self.expected_coupons.couponEnd].to_numpy()
+        df = self.discount_curve.discount_factor_at(self.expected_coupons.couponEnd)
         start, end = self.expected_coupons.couponStart.iloc[0], self.expected_coupons.couponEnd.iloc[0]
         accrued_interest = self.expected_coupons.coupon.iloc[0] * (self.bond.evaluation_date + BDay(2)
                                                                    - start).days / (end - start).days
@@ -139,7 +161,7 @@ class Pricer:
                                     "cleanPrice": (expected_coupon_pv + face_value_pv - accrued_interest).item()}}
 
         if self.bond._cds_spread:
-            if self.bond._recovery_rate is None:
+            if self.bond.recovery_rate is None:
                 warnings.warn(
                     "CDS spread detected but could not find recovery rate. Continue with risk free valuation.")
                 return prices
@@ -218,11 +240,23 @@ class BlackPricer(Pricer):
 
         # underlying:
         underlying_rate = self.forward_rates + self.bond.spread
-        # d1 and d2:
-        d1_cap = (np.log(underlying_rate / self.bond.cap) + 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
-        d2_cap = (np.log(underlying_rate / self.bond.cap) - 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
-        d1_floor = (np.log(underlying_rate / self.bond.floor) + 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
-        d2_floor = (np.log(underlying_rate / self.bond.floor) - 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
+
+        # The lognormal Black model cannot price negative strikes; a strike of
+        # exactly 0 is handled below (log→±inf gives the correct degenerate
+        # premium: worthless floor, always-in-the-money cap).
+        for name, strike in (("cap", self.bond.cap), ("floor", self.bond.floor)):
+            if not np.isnan(strike) and strike < 0:
+                raise ValueError(
+                    f"Black model requires a non-negative {name} strike; got {strike}. "
+                    "Use BachelierPricer (normal model) for negative strikes."
+                )
+
+        # d1 and d2 (errstate: log(rate/0) → inf is the intended limit, not an error):
+        with np.errstate(divide="ignore"):
+            d1_cap = (np.log(underlying_rate / self.bond.cap) + 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
+            d2_cap = (np.log(underlying_rate / self.bond.cap) - 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
+            d1_floor = (np.log(underlying_rate / self.bond.floor) + 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
+            d2_floor = (np.log(underlying_rate / self.bond.floor) - 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
 
         # N(d1) and N(d2)
         nd1_cap, nd2_cap = norm.cdf(d1_cap), norm.cdf(d2_cap)
@@ -234,18 +268,27 @@ class BlackPricer(Pricer):
 
     def _get_current_coupon(self):
         reset_dates = self.bond.schedule.schedule["resetDate"]
-        reset = reset_dates[reset_dates <= self.bond.evaluation_date][-1]
-        reset_rate = self.bond.historical_euribor.loc[reset].item()
-        start = self.bond.schedule.schedule["startingDate"][reset_dates <= self.bond.evaluation_date][-1]
-        end = self.bond.schedule.schedule["paymentDate"][reset_dates <= self.bond.evaluation_date][-1]
-        af = accrual_factor(self.bond.dcc, start, end)
+        past_mask = reset_dates <= self.bond.evaluation_date
+        if not past_mask.any():
+            raise ValueError("Evaluation date precedes the first reset date: no current coupon exists yet.")
+        reset = reset_dates[past_mask][-1]
+        start = self.bond.schedule.schedule["startingDate"][past_mask][-1]
+        end = self.bond.schedule.schedule["paymentDate"][past_mask][-1]
+        af = accrual_factor(self.bond.dcc, start, end).item()
+
+        if self.bond.current_coupon_rate is not None:
+            coupon_rate = self.bond.current_coupon_rate
+            reset_rate = coupon_rate - self.bond.spread
+        else:
+            reset_rate = self.bond.historical_euribor.loc[reset].item()
+
         floorlet = np.maximum(self.bond.floor - (reset_rate + self.bond.spread), 0) * af * self.bond.face_amount
         caplet = np.maximum((reset_rate + self.bond.spread) - self.bond.cap, 0) * af * self.bond.face_amount
         coupon_rate = reset_rate + self.bond.spread
-        self._current_coupon = pd.DataFrame(
+        self._current_coupon = pd.DataFrame([
             {"resetDate": reset, "couponStart": start, "couponEnd": end, "accrualFactor": af, "resetRate": reset_rate,
              "spread": self.bond.spread, "couponRate": coupon_rate, "floorlet": floorlet, "caplet": -caplet,
-             "coupon": np.nansum([coupon_rate * af * self.bond.face_amount, floorlet, - caplet])})
+             "coupon": np.nansum([coupon_rate * af * self.bond.face_amount, floorlet, - caplet])}])
 
     def _get_expected_coupons(self):
         reset_dates = self.bond.schedule.schedule["resetDate"]
@@ -254,16 +297,25 @@ class BlackPricer(Pricer):
         payments = self.bond.schedule.schedule["paymentDate"][reset_dates > self.bond.evaluation_date]
         af = accrual_factor(self.bond.dcc, starts, payments)
         coupon_rate = self.forward_rates + self.bond.spread
-        index = pd.RangeIndex(self.bond.coupon_history.index[-1] + 1,
-                              self.bond.coupon_history.shape[0] + len(payments) + 2, name="couponNumber")
-        self._expected_coupons = pd.concat(
-            [self.current_coupon, pd.DataFrame(
+
+        if self.bond._historical_euribor is not None and len(self.bond.coupons_history) > 0:
+            start_idx = self.bond.coupons_history.index[-1] + 1
+            n_hist = self.bond.coupons_history.shape[0]
+        else:
+            start_idx = 1
+            n_hist = 0
+        index = pd.RangeIndex(start_idx, n_hist + len(payments) + 2, name="couponNumber")
+
+        dfs = [self.current_coupon]
+        if len(resets) > 0:
+            dfs.append(pd.DataFrame(
                 {"resetDate": resets, "couponStart": starts, "couponEnd": payments, "accrualFactor": af,
                  "resetRate": self.forward_rates, "spread": self.bond.spread, "couponRate": coupon_rate,
                  "floorlet": self.floor_forward_premiums, "caplet": -self.cap_forward_premiums,
                  "coupon": np.nansum([coupon_rate * af * self.bond.face_amount, self.floor_forward_premiums,
-                                      -self.cap_forward_premiums], axis=0)}
-            )], ignore_index=True).set_index(index).replace(np.nan, "-")
+                                      -self.cap_forward_premiums], axis=0)}))
+
+        self._expected_coupons = pd.concat(dfs, ignore_index=True).set_index(index).replace(np.nan, "-")
 
 
 class BachelierPricer(BlackPricer):
@@ -347,11 +399,20 @@ class DisplacedBlackPricer(BlackPricer):
         # underlying:
         underlying_rate = self.forward_rates + self.bond.spread + self.shift
 
-        # d1 and d2:
-        d1_cap = (np.log(underlying_rate / cap_strike) + 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
-        d2_cap = (np.log(underlying_rate / cap_strike) - 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
-        d1_floor = (np.log(underlying_rate / floor_strike) + 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
-        d2_floor = (np.log(underlying_rate / floor_strike) - 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
+        # After displacement the strikes must be non-negative for the lognormal model.
+        for name, strike in (("shifted cap", cap_strike), ("shifted floor", floor_strike)):
+            if not np.isnan(strike) and strike < 0:
+                raise ValueError(
+                    f"Displaced-Black requires a non-negative {name} strike; got {strike}. "
+                    "Increase the displacement or use BachelierPricer."
+                )
+
+        # d1 and d2 (errstate: log(rate/0) → inf is the intended limit, not an error):
+        with np.errstate(divide="ignore"):
+            d1_cap = (np.log(underlying_rate / cap_strike) + 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
+            d2_cap = (np.log(underlying_rate / cap_strike) - 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
+            d1_floor = (np.log(underlying_rate / floor_strike) + 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
+            d2_floor = (np.log(underlying_rate / floor_strike) - 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
 
         # N(d1) and N(d2)
         nd1_cap, nd2_cap = norm.cdf(d1_cap), norm.cdf(d2_cap)

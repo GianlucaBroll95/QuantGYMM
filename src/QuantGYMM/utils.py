@@ -154,6 +154,54 @@ def business_adjustment(convention, dates):
                 raise ValueError(f"Business convention '{convention}' not implemented.")
 
 
+def _is_sequence(x):
+    """
+    Helper function to check if x is a sequence, not just an iterable.
+    """
+    return isinstance(x, (list, tuple, np.ndarray, pd.Series, pd.Index))
+
+
+def _apply_pairwise(dcc_function, *dates):
+    """
+    Dispatcher for day count convention
+    """
+    result = []
+
+    if len(dates) == 1:
+        dates = dates[0]
+        for start, end in zip(dates, dates[1:]):
+            result.append(dcc_function(start, end))
+    elif len(dates) == 2:
+        d0, d1 = dates
+        if not _is_sequence(d0) and not _is_sequence(d1):
+            result.append(dcc_function(d0, d1))
+        elif not _is_sequence(d0) and _is_sequence(d1):
+            for end in d1:
+                result.append(dcc_function(d0, end))
+        elif _is_sequence(d0) and _is_sequence(d1):
+            if len(d0) != len(d1):
+                raise ValueError(f"Mismatch in dates. d0 is {len(d0)}, d1 is {len(d1)}.")
+            for start, end in zip(d0, d1):
+                result.append(dcc_function(start, end))
+        else:
+            raise ValueError("Wrong dimension for dates.")
+    else:
+        raise ValueError("Wrong dimension for dates.")
+
+    return np.asarray(result)
+
+
+def _thirty360_single(start, end):
+    d1 = 30 if start.day == 31 else start.day
+
+    if (end.day == 31) and ((start.day == 31) or (start.day == 30)):
+        d2 = 30
+    else:
+        d2 = end.day
+
+    return (360 * (end.year - start.year) + 30 * (end.month - start.month) + (d2 - d1)) / 360
+
+
 def thirty360(*dates):
     """
     Compute accrual factor according to day count convention 30/360.
@@ -162,57 +210,7 @@ def thirty360(*dates):
     Returns:
         numpy.ndarray of accrual factors.
     """
-    af = np.array([])
-    if len(dates) == 1:
-        dates = dates[0]
-        for start, end in zip(dates, dates[1:]):
-            if start.day == 31:
-                d1 = 30
-            else:
-                d1 = start.day
-            if (end.day == 31) and ((start.day == 31) or (start.day == 30)):
-                d2 = 30
-            else:
-                d2 = end.day
-            y1, y2 = start.year, end.year
-            m1, m2 = start.month, end.month
-            af = np.append(af, ((360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)) / 360))
-    elif len(dates) == 2:
-        if not isinstance(dates[0], Iterable) and not isinstance(dates[1], Iterable):
-            d1 = 30 if dates[0].day == 31 else dates[0].day
-            if (dates[1].day == 31) and ((d1 == 31) or (d1 == 30)):
-                d2 = 30
-            else:
-                d2 = dates[1].day
-            m1, y1 = dates[0].month, dates[0].year
-            m2, y2 = dates[1].month, dates[1].year
-            af = np.append(af, ((360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)) / 360))
-        elif not isinstance(dates[0], Iterable) and isinstance(dates[1], Iterable):
-            d1 = 30 if dates[0].day == 31 else dates[0].day
-            m1, y1 = dates[0].month, dates[0].year
-            for end in dates[1]:
-                if (end.day == 31) and ((d1 == 31) or (d1 == 30)):
-                    d2 = 30
-                else:
-                    d2 = end.day
-                m2, y2 = end.month, end.year
-                af = np.append(af, ((360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)) / 360))
-        else:
-            for start, end in zip(dates[0], dates[1]):
-                if start.day == 31:
-                    d1 = 30
-                else:
-                    d1 = start.day
-                if (end.day == 31) and ((start.day == 31) or (start.day == 30)):
-                    d2 = 30
-                else:
-                    d2 = end.day
-                y1, y2 = start.year, end.year
-                m1, m2 = start.month, end.month
-                af = np.append(af, ((360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)) / 360))
-    else:
-        raise ValueError("Wrong dimension for dates.")
-    return af
+    return _apply_pairwise(_thirty360_single, *dates)
 
 
 def _thirty_e_360_single(start, end):
@@ -230,24 +228,7 @@ def thirty_e_360(*dates):
     Returns:
         numpy.ndarray of accrual factors.
     """
-    af = np.array([])
-    if len(dates) == 1:
-        dates = dates[0]
-        for start, end in zip(dates, dates[1:]):
-            af = np.append(af, _thirty_e_360_single(start, end))
-    elif len(dates) == 2:
-        if not isinstance(dates[0], Iterable) and not isinstance(dates[1], Iterable):
-            af = np.append(af, _thirty_e_360_single(dates[0], dates[1]))
-        elif not isinstance(dates[0], Iterable) and isinstance(dates[1], Iterable):
-            start = dates[0]
-            for end in dates[1]:
-                af = np.append(af, _thirty_e_360_single(start, end))
-        else:
-            for start, end in zip(dates[0], dates[1]):
-                af = np.append(af, _thirty_e_360_single(start, end))
-    else:
-        raise ValueError("Wrong dimension for dates.")
-    return af
+    return _apply_pairwise(_thirty_e_360_single, *dates)
 
 
 def act360(*dates):
@@ -258,25 +239,8 @@ def act360(*dates):
     Returns:
         numpy.ndarray of accrual factors.
     """
-    af = np.array([])
-    if len(dates) == 1:
-        dates = dates[0]
-        for start, end in zip(dates, dates[1:]):
-            af = np.append(af, (end - start).days / 360)
-    elif len(dates) == 2:
-        if not isinstance(dates[0], Iterable) and not isinstance(dates[1], Iterable):
-            start, end = dates[0], dates[1]
-            af = np.append(af, (end - start).days / 360)
-        elif not isinstance(dates[0], Iterable) and isinstance(dates[1], Iterable):
-            start = dates[0]
-            for end in dates[1]:
-                af = np.append(af, (end - start).days / 360)
-        else:
-            for start, end in zip(dates[0], dates[1]):
-                af = np.append(af, (end - start).days / 360)
-    else:
-        raise ValueError("Wrong dimension for dates.")
-    return af
+
+    return _apply_pairwise(lambda d0, d1: (d1 - d0).days / 360, *dates)
 
 
 def act365(*dates):
@@ -287,25 +251,8 @@ def act365(*dates):
     Returns:
         numpy.ndarray of accrual factors.
     """
-    accrual_factor = np.array([])
-    if len(dates) == 1:
-        dates = dates[0]
-        for start, end in zip(dates, dates[1:]):
-            accrual_factor = np.append(accrual_factor, (end - start).days / 365)
-    elif len(dates) == 2:
-        if not isinstance(dates[0], Iterable) and not isinstance(dates[1], Iterable):
-            start, end = dates[0], dates[1]
-            accrual_factor = np.append(accrual_factor, (end - start).days / 365)
-        elif not isinstance(dates[0], Iterable) and isinstance(dates[1], Iterable):
-            start = dates[0]
-            for end in dates[1]:
-                accrual_factor = np.append(accrual_factor, (end - start).days / 365)
-        else:
-            for start, end in zip(dates[0], dates[1]):
-                accrual_factor = np.append(accrual_factor, (end - start).days / 365)
-    else:
-        raise ValueError("Wrong dimension for dates.")
-    return accrual_factor
+    return _apply_pairwise(lambda d0, d1: (d1 - d0).days / 365, *dates)
+
 
 def _act_act_single(start, end):
     """
@@ -334,25 +281,7 @@ def act_act(*dates):
     Returns:
         numpy.ndarray of accrual factors.
     """
-    accrual_factor = np.array([])
-    if len(dates) == 1:
-        dates = dates[0]
-        for start, end in zip(dates, dates[1:]):
-            accrual_factor = np.append(accrual_factor, _act_act_single(start, end))
-    elif len(dates) == 2:
-        if not isinstance(dates[0], Iterable) and not isinstance(dates[1], Iterable):
-            start, end = dates[0], dates[1]
-            accrual_factor = np.append(accrual_factor, _act_act_single(start, end))
-        elif not isinstance(dates[0], Iterable) and isinstance(dates[1], Iterable):
-            start = dates[0]
-            for end in dates[1]:
-                accrual_factor = np.append(accrual_factor, _act_act_single(start, end))
-        else:
-            for start, end in zip(dates[0], dates[1]):
-                accrual_factor = np.append(accrual_factor, _act_act_single(start, end))
-    else:
-        raise ValueError("Wrong dimension for dates.")
-    return accrual_factor
+    return _apply_pairwise(_act_act_single, *dates)
 
 
 def _nl365_single(start, end):
@@ -374,24 +303,7 @@ def nl365(*dates):
     Returns:
         numpy.ndarray of accrual factors.
     """
-    af = np.array([])
-    if len(dates) == 1:
-        dates = dates[0]
-        for start, end in zip(dates, dates[1:]):
-            af = np.append(af, _nl365_single(start, end))
-    elif len(dates) == 2:
-        if not isinstance(dates[0], Iterable) and not isinstance(dates[1], Iterable):
-            af = np.append(af, _nl365_single(dates[0], dates[1]))
-        elif not isinstance(dates[0], Iterable) and isinstance(dates[1], Iterable):
-            start = dates[0]
-            for end in dates[1]:
-                af = np.append(af, _nl365_single(start, end))
-        else:
-            for start, end in zip(dates[0], dates[1]):
-                af = np.append(af, _nl365_single(start, end))
-    else:
-        raise ValueError("Wrong dimension for dates.")
-    return af
+    return _apply_pairwise(_nl365_single, *dates)
 
 
 def _infer_frequency(start, end):
@@ -431,24 +343,7 @@ def act_act_icma(*dates, frequency=None):
         f = frequency if frequency is not None else _infer_frequency(start, end)
         return 1 / f
  
-    af = np.array([])
-    if len(dates) == 1:
-        dates = dates[0]
-        for start, end in zip(dates, dates[1:]):
-            af = np.append(af, _af(start, end))
-    elif len(dates) == 2:
-        if not isinstance(dates[0], Iterable) and not isinstance(dates[1], Iterable):
-            af = np.append(af, _af(dates[0], dates[1]))
-        elif not isinstance(dates[0], Iterable) and isinstance(dates[1], Iterable):
-            start = dates[0]
-            for end in dates[1]:
-                af = np.append(af, _af(start, end))
-        else:
-            for start, end in zip(dates[0], dates[1]):
-                af = np.append(af, _af(start, end))
-    else:
-        raise ValueError("Wrong dimension for dates.")
-    return af
+    return _apply_pairwise(_af, *dates)
            
 
 def accrual_factor(dcc, *dates, frequency=None):
