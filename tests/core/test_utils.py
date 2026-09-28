@@ -164,18 +164,19 @@ class TestNL365:
 
 class TestActActICMA:
 
-    def test_fixed_frequency(self):
-        af = act_act_icma(D1, D2, frequency=12)[0]
-        assert_close(af, 1 / 12)
-
-    def test_infer_frequency(self):
+    def test_regular_period_is_its_own_reference(self):
         d_start = pd.Timestamp("2023-01-01")
         d_end   = pd.Timestamp("2023-07-01")
 
         af = act_act_icma(d_start, d_end)[0]
 
-        # ~6 months → freq ≈ 2
         assert_close(af, 1 / 2)
+
+    def test_reference_period_measures_an_irregular_period(self):
+        af = act_act_icma(pd.Timestamp("2026-02-10"), pd.Timestamp("2027-01-09"),
+                          reference=(pd.Timestamp("2026-01-09"), pd.Timestamp("2027-01-09")))[0]
+
+        assert_close(af, 333 / 365)
 
 
 # ---------------------------------------------------------------------------

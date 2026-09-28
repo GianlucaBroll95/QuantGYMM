@@ -42,16 +42,16 @@ def test_act_act_isda(start, end, expected):
         assert result == pytest.approx(expected_split, abs=1e-6)
 
 
-@pytest.mark.parametrize("start, end, frequency, expected", [
-    ("2023-03-15", "2023-09-15", None, 0.5),    # inferred semiannual
-    ("2023-03-15", "2024-03-15", None, 1.0),    # inferred annual
-    ("2023-03-15", "2023-06-15", None, 0.25),   # inferred quarterly
-    ("2023-03-15", "2023-09-15", 4, 0.25),      # explicit override beats inference
+@pytest.mark.parametrize("start, end, reference, expected", [
+    ("2023-03-15", "2023-09-15", None, 0.5),                                  # regular semiannual
+    ("2023-03-15", "2024-03-15", None, 1.0),                                  # regular annual
+    ("2023-03-15", "2023-06-15", None, 0.25),                                 # regular quarterly
+    ("2026-05-15", "2026-11-15", ("2025-11-15", "2026-11-15"), 184 / 365),    # short first period
 ])
-def test_act_act_icma(start, end, frequency, expected):
-    kwargs = {} if frequency is None else {"frequency": frequency}
+def test_act_act_icma(start, end, reference, expected):
+    kwargs = {} if reference is None else {"reference": tuple(pd.Timestamp(d) for d in reference)}
     result = accrual_factor("ACT/ACT ICMA", pd.Timestamp(start), pd.Timestamp(end), **kwargs)
-    assert result[0] == pytest.approx(expected, abs=1e-6)
+    assert result[0] == pytest.approx(expected, abs=1e-12)
 
 
 def test_accrual_factor_list_of_dates():

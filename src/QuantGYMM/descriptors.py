@@ -8,25 +8,28 @@ __all__ = ["Date", "PositiveNumber", "PositiveInteger", "NonNegativeInteger", "B
 
 
 class Date:
-    def __init__(self, sterilize_attr=None):
+    def __init__(self, sterilize_attr=None, none_accepted=False):
         if sterilize_attr is None:
             sterilize_attr = []
         self.sterilize_attr = sterilize_attr
+        self.none_accepted = none_accepted
 
     def __set_name__(self, owner, name):
         self.property_name = name
 
     def __set__(self, instance, value):
-        if isinstance(value, str):
+        if value is None and self.none_accepted:
+            instance.__dict__[self.property_name] = None
+        elif isinstance(value, str):
             try:
-
                 instance.__dict__[self.property_name] = pd.to_datetime(datetime.date.fromisoformat(value))
             except Exception:
-                raise TypeError(f"Can't convert '{value}' into datetime.")
-        elif isinstance(value, pandas.Timestamp):
-            instance.__dict__[self.property_name] = value
+                raise TypeError(f"Can't convert '{value}' into datetime.") from None
+        elif isinstance(value, datetime.date):
+            instance.__dict__[self.property_name] = pd.Timestamp(value)
         else:
-            raise TypeError(f"Wrong type for '{self.property_name}'. Accepted types are string or pandas.Timestamp.")
+            raise TypeError(
+                f"Wrong type for '{self.property_name}'. Accepted types are string, datetime.date or pandas.Timestamp.")
         if self.sterilize_attr:
             for attr in self.sterilize_attr:
                 instance.__dict__[attr] = None
@@ -49,7 +52,8 @@ class PositiveNumber:
         self.property_name = name
 
     def __set__(self, instance, value):
-        if (isinstance(value, (float, int, np.integer, np.floating)) and value > 0) or (value is None and self.none_accepted):
+        if (isinstance(value, (float, int, np.integer, np.floating)) and value > 0) or (
+                value is None and self.none_accepted):
             instance.__dict__[self.property_name] = value
         else:
             raise TypeError(f"'{self.property_name}' must be a positive number.")
@@ -124,7 +128,8 @@ class NonNegativeInteger:
 
 
 class BusinessConvention:
-    _BUSINESS_CONVENTIONS = ["following", "modified_following", "preceding", "modified_following_bimonthly"]
+    _BUSINESS_CONVENTIONS = ["unadjusted", "following", "modified_following", "preceding",
+                             "modified_following_bimonthly"]
 
     def __init__(self, sterilize_attr=None):
         if sterilize_attr is None:
@@ -176,7 +181,7 @@ class Boolean:
 
 class DayCountConvention:
     _DAY_COUNT_CONVENTIONS = ["30/360", "30E/360", "ACT/360", "ACT/365", "ACT/ACT", "ACT/ACT ISDA",
-                          "ACT/ACT ICMA", "NL/365"]
+                              "ACT/ACT ICMA", "NL/365"]
 
     def __init__(self, sterilize_attr=None):
         if sterilize_attr is None:
@@ -297,6 +302,8 @@ class DataFrame:
         self.property_name = name
 
     def __set__(self, instance, value):
+        if isinstance(value, pandas.Series):
+            value = value.to_frame()
         if isinstance(value, pandas.DataFrame):
             if self.index_type:
                 if isinstance(value.index, self.index_type):

@@ -1,50 +1,64 @@
+import functools
+import re
+
 import numpy as np
 import pandas as pd
+import datetime as dt
 from collections.abc import Iterable
-from pandas.tseries.offsets import BDay, Day
+from pandas.tseries.offsets import DateOffset
 from dateutil.easter import easter
 
-__all__ = ["is_bd", "is_easter", "is_christmas", "is_holy_friday", "is_holy_monday", "is_target_holiday",
-           "is_labour_day", "is_new_year_day", "is_saint_stephen", "modified_following", "modified_following_bimonthly",
-           "preceding", "following", "business_adjustment", "number_of_month", "thirty360", "thirty_e_360",
-           "act365", "act360", "act_act", "act_act_icma", "nl365", "accrual_factor"]
-def is_easter(date) -> bool:
-    return date.date() == easter(date.year)
+__all__ = ["tenor_offset", "is_bd", "is_target_holiday", "modified_following", "modified_following_bimonthly",
+           "preceding", "following", "business_adjustment", "business_days_before", "business_days_after",
+           "number_of_month", "thirty360", "thirty_e_360", "act365", "act360", "act_act", "act_act_icma", "nl365",
+           "accrual_factor", "imm_date"]
+_TENOR_UNITS = {"W": "weeks", "M": "months", "Y": "years"}
+_TENOR = re.compile(r"\s*(\d+)\s*([WMY])\s*", re.IGNORECASE)
 
 
-def is_holy_friday(date) -> bool:
-    return date == (easter(date.year) - Day(2))
+def tenor_offset(tenor) -> DateOffset:
+    """
+    Date offset a tenor stands for.
+    Args:
+        tenor (str): a number followed by 'W', 'M' or 'Y', e.g. '1W', '18M', '50Y'.
+    Returns:
+        pandas.tseries.offsets.DateOffset
+    """
+    match = _TENOR.fullmatch(str(tenor))
+    if match is None:
+        raise ValueError(f"Invalid tenor '{tenor}': expected a number followed by 'W', 'M' or 'Y'.")
+    size, unit = match.groups()
+    return DateOffset(**{_TENOR_UNITS[unit.upper()]: int(size)})
 
 
-def is_holy_monday(date) -> bool:
-    return date == (easter(date.year) + Day(1))
-
-
-def is_christmas(date) -> bool:
-    return (date.month == 12) and (date.day == 25)
-
-
-def is_saint_stephen(date) -> bool:
-    return (date.month == 12) and (date.day == 26)
-
-
-def is_labour_day(date) -> bool:
-    return (date.month == 5) and (date.day == 1)
-
-
-def is_new_year_day(date) -> bool:
-    return (date.month == 1) and (date.day == 1)
+@functools.lru_cache(maxsize=None)
+def _target_holidays(year):
+    easter_sunday = easter(year)
+    return frozenset({
+        dt.date(year, 1, 1),
+        easter_sunday - dt.timedelta(days=2),
+        easter_sunday,
+        easter_sunday + dt.timedelta(days=1),
+        dt.date(year, 5, 1),
+        dt.date(year, 12, 25),
+        dt.date(year, 12, 26),
+    })
 
 
 def is_target_holiday(date) -> bool:
-    e = is_easter(date)
-    hf = is_holy_friday(date)
-    hm = is_holy_monday(date)
-    c = is_christmas(date)
-    ss = is_saint_stephen(date)
-    ld = is_labour_day(date)
-    ny = is_new_year_day(date)
-    return e + hf + hm + c + ss + ld + ny != 0
+    return date.date() in _target_holidays(date.year)
+
+
+def imm_date(date) -> pd.Timestamp:
+    """
+    Third Wednesday of the month a date falls in.
+    Args:
+        date (str | pandas.Timestamp): any day of the month.
+    Returns:
+        pandas.Timestamp
+    """
+    first = pd.Timestamp(date).replace(day=1)
+    return first + pd.Timedelta(days=(2 - first.weekday()) % 7 + 14)
 
 
 def is_bd(date) -> bool:
@@ -56,7 +70,7 @@ def is_bd(date) -> bool:
         bool
     """
 
-    return (date == date + Day(1) - BDay(1)) and not is_target_holiday(date)
+    return (date.weekday() < 5) and not is_target_holiday(date)
 
 
 def modified_following(date):
@@ -67,12 +81,8 @@ def modified_following(date):
     Returns:
         date adjusted for business convention.
     """
-    if is_bd(date):
-        return date
-    elif (date + BDay(1)).month != date.month:
-        return date - BDay(1)
-    else:
-        return date + BDay(1)
+    adjusted = following(date)
+    return adjusted if adjusted.month == date.month else preceding(date)
 
 
 def following(date):
@@ -83,10 +93,9 @@ def following(date):
     Returns:
         date adjusted for business convention.
     """
-    if is_bd(date):
-        return date
-    else:
-        return date + BDay(1)
+    while not is_bd(date):
+        date += pd.Timedelta(days=1)
+    return date
 
 
 def modified_following_bimonthly(date):
@@ -97,12 +106,10 @@ def modified_following_bimonthly(date):
     Returns:
         date adjusted for business convention.
     """
-    if is_bd(date):
-        return date
-    elif (date + BDay(1)).month != date.month or (date.day <= 15 < (date + BDay(1)).day):
-        return date - BDay(1)
-    else:
-        return date + BDay(1)
+    adjusted = following(date)
+    if adjusted.month != date.month or date.day <= 15 < adjusted.day:
+        return preceding(date)
+    return adjusted
 
 
 def preceding(date):
@@ -113,10 +120,44 @@ def preceding(date):
     Returns:
         date adjusted for business convention.
     """
-    if is_bd(date):
-        return date
-    else:
-        return date - BDay(1)
+    while not is_bd(date):
+        date -= pd.Timedelta(days=1)
+    return date
+
+
+def business_days_before(dates, n) -> pd.Timestamp | np.ndarray:
+    """
+    Step back 'n' business days on the TARGET calendar.
+    Args:
+        dates (Iterable | pandas.Timestamp): dates to step back from;
+        n (int): number of business days.
+    Returns:
+        dates moved back 'n' business days.
+    """
+    return _business_days_offset(dates, n, -pd.Timedelta(days=1))
+
+
+def business_days_after(dates, n) -> pd.Timestamp | np.ndarray:
+    """
+     Step ahead 'n' business days on the TARGET calendar.
+     Args:
+         dates (Iterable | pandas.Timestamp): dates to step back from;
+         n (int): number of business days.
+     Returns:
+         dates ahead 'n' business days.
+     """
+    return _business_days_offset(dates, n, pd.Timedelta(days=1))
+
+
+def _business_days_offset(dates, n, step):
+    if isinstance(dates, Iterable) and not isinstance(dates, str):
+        return np.asarray([_business_days_offset(date, n, step) for date in dates])
+    date = pd.Timestamp(dates)
+    for _ in range(n):
+        date += step
+        while not is_bd(date):
+            date += step
+    return date
 
 
 def business_adjustment(convention, dates):
@@ -130,6 +171,8 @@ def business_adjustment(convention, dates):
     """
     if isinstance(dates, Iterable):
         match convention:
+            case "unadjusted":
+                return list(dates)
             case "preceding":
                 return [preceding(m) for m in dates]
             case "following":
@@ -142,6 +185,8 @@ def business_adjustment(convention, dates):
                 raise ValueError(f"Business convention '{convention}' not implemented.")
     else:
         match convention:
+            case "unadjusted":
+                return dates
             case "preceding":
                 return preceding(dates)
             case "following":
@@ -273,6 +318,7 @@ def _act_act_single(start, end):
         total += (y_end - y_start).days / days_in_year
     return total
 
+
 def act_act(*dates):
     """
     Compute accrual factor according to day count convention ACT/ACT (ISDA).
@@ -306,52 +352,65 @@ def nl365(*dates):
     return _apply_pairwise(_nl365_single, *dates)
 
 
-def _infer_frequency(start, end):
-    """
-    Infer coupon frequency from a (start, end) period length, rounding to the nearest
-    standard frequency (1, 2, 3, 4, 6, 12). Only reliable for regular (non-stub) periods.
-    """
-    months = number_of_month(start, end)
-    standard = np.array([1, 2, 3, 4, 6, 12])
-    target_months = 12 / standard
-    return int(standard[np.argmin(np.abs(target_months - months))])
+def _act_act_icma_single(start, end, reference_start=None, reference_end=None):
+    if end == start:
+        return 0.0
+    if end < start:
+        return -_act_act_icma_single(end, start, reference_start, reference_end)
+    reference_start = start if reference_start is None else reference_start
+    reference_end = end if reference_end is None else reference_end
+    months = int(np.floor(12 * (reference_end - reference_start).days / 365 + 0.5))
+    if months == 0:
+        reference_start, reference_end, months = start, start + DateOffset(years=1), 12
+    period = months / 12
+    if end <= reference_end:
+        if start >= reference_start:
+            return period * (end - start).days / (reference_end - reference_start).days
+        previous = reference_start - DateOffset(months=months)
+        if end > reference_start:
+            return (_act_act_icma_single(start, reference_start, previous, reference_start)
+                    + _act_act_icma_single(reference_start, end, reference_start, reference_end))
+        return _act_act_icma_single(start, end, previous, reference_start)
+    if reference_start > start:
+        raise ValueError("Invalid dates: start < reference start < reference end < end.")
+    fraction = _act_act_icma_single(start, reference_end, reference_start, reference_end)
+    i = 0
+    while True:
+        next_start = reference_end + DateOffset(months=months * i)
+        next_end = reference_end + DateOffset(months=months * (i + 1))
+        if end < next_end:
+            break
+        fraction += period
+        i += 1
+    return fraction + _act_act_icma_single(next_start, end, next_start, next_end)
 
 
-def act_act_icma(*dates, frequency=None):
+def act_act_icma(*dates, reference=None):
     """
-    Compute accrual factor according to day count convention ACT/ACT ICMA (bond basis).
-    Unlike ACT/ACT ISDA, the fraction is computed as actual days elapsed divided by
-    (actual days in the full coupon period * frequency).
+    Compute accrual factor according to day count convention ACT/ACT ICMA (ISMA-251, bond basis).
     Args:
-        dates (Iterable, pandas.Timestamp): two dates or a list of dates representing coupon period
-                                            start/end pairs.
-        frequency (int | float | None): number of coupon periods per year (e.g. 1, 2, 4, 12).
-                                        If None, it is inferred from the period length of each
-                                        (start, end) pair — reliable only for regular, non-stub periods.
+        dates (Iterable, pandas.Timestamp): two dates or a list of dates.
+        reference (tuple): [optional] start and end of the regular coupon period each (start, end) pair
+                           belongs to; defaults to the pair itself, which is right for regular periods.
     Returns:
         numpy.ndarray of accrual factors.
-
-    # ICMA convention: for a full, regular (non-stub) coupon period, the accrual fraction
-    # is always exactly 1/frequency by construction, regardless of the actual number of
-    # calendar days in that specific period. Genuine stub periods (irregular first/last
-    # coupon) are NOT handled correctly here, since frequency inference from period length
-    # would be wrong for them — pass 'frequency' explicitly and review stub periods manually.
     """
-    
- 
-    def _af(start, end):
-        f = frequency if frequency is not None else _infer_frequency(start, end)
-        return 1 / f
- 
-    return _apply_pairwise(_af, *dates)
-           
+    if reference is None:
+        return _apply_pairwise(_act_act_icma_single, *dates)
+    columns = [*dates, *reference]
+    n = max(len(column) if _is_sequence(column) else 1 for column in columns)
+    columns = [list(column) if _is_sequence(column) else [column] * n for column in columns]
+    return np.asarray([_act_act_icma_single(*row) for row in zip(*columns)])
 
-def accrual_factor(dcc, *dates, frequency=None):
+
+def accrual_factor(dcc, *dates, reference=None):
     """
     Wrapper for accrual factor calculation according to different business conventions.
     Args:
         dcc (str): day count convention;
         dates (Iterable | pandas.Timestamp): dates with respect to which determine accrual factor.
+        reference (tuple): [optional] start and end of the regular coupon period of each pair, used by
+                           ACT/ACT ICMA only.
     Returns:
         np.ndarray of accrual factors.
     """
@@ -363,7 +422,7 @@ def accrual_factor(dcc, *dates, frequency=None):
         case "ACT/ACT" | "ACT/ACT ISDA":
             return act_act(*dates)
         case "ACT/ACT ICMA":
-            return act_act_icma(*dates, frequency=frequency)
+            return act_act_icma(*dates, reference=reference)
         case "30/360":
             return thirty360(*dates)
         case "30E/360":

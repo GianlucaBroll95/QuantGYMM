@@ -1,13 +1,11 @@
-from ..term_structures import DiscountCurve
 import pandas as pd
 import numpy as np
 import scipy
 from scipy.stats import norm
-from ..utils import *
-import warnings
-from pandas.tseries.offsets import DateOffset, BDay
+from .curves import YieldCurve
+from ..utils import accrual_factor
 
-__all__ = ["Pricer", "BlackPricer", "BachelierPricer", "DisplacedBlackPricer"]
+__all__ = ["Pricer", "BlackCouponPricer", "BachelierCouponPricer", "DisplacedBlackCouponPricer"]
 
 
 class Pricer:
@@ -18,186 +16,63 @@ class Pricer:
     def __init__(self, discount_curve):
         """
         Args:
-            discount_curve (DiscountCurve): DiscountCurve instance.
+            discount_curve (YieldCurve): curve the cash flows are discounted on.
         """
 
+        if not isinstance(discount_curve, YieldCurve):
+            raise ValueError("Pricer needs a YieldCurve object.")
         self.discount_curve = discount_curve
-        self._bond = None
-        self._forward_rates = None
-        self._current_coupon = None
-        self._expected_coupons = None
 
-    @property
-    def discount_curve(self):
-        return self._discount_curve
+    def discount_factor_at(self, bond, dates):
+        curve = self.discount_curve
+        t = accrual_factor(curve.dcc, curve.trade_date, dates)
+        return curve.discount_factor_at(dates) * np.exp(-bond.z_spread * t)
 
-    @discount_curve.setter
-    def discount_curve(self, discount_curve):
-        if isinstance(discount_curve, DiscountCurve):
-            self._discount_curve = discount_curve
-            self._forward_rates = None
-            self._current_coupon = None
-            self._expected_coupons = None
-        else:
-            raise ValueError(
-                f"'discount_curve' must be a DiscountCurve object. Got {discount_curve.__class__.__name__}.")
-
-    @property
-    def forward_rates(self):
-        if self._forward_rates is None or self.discount_curve.shift_flag:
-            self._get_forward_rates()
-        return self._forward_rates
-
-    @property
-    def current_coupon(self):
-        if self._current_coupon is None:
-            self._get_current_coupon()
-        return self._current_coupon
-
-    @property
-    def bond(self):
-        if self._bond is None:
-            raise ValueError("Bond missing.")
-        return self._bond
-
-    @property
-    def expected_coupons(self):
-        if self._expected_coupons is None or self.discount_curve.shift_flag:
-            self._get_expected_coupons()
-        return self._expected_coupons
-
-    def transfer_bond_features(self, bond) -> None:
+    def present_value(self, bond, date=None) -> float:
         """
-        Passes to the pricer the bond characteristics.
+        Value of the cash flows paid after 'date', at 'date'.
         Args:
-            bond (Bond): bond on which the pricer needs to be bounded.
+            bond (Bond): bond to price, evaluated on the curve's trade date.
+            date (pandas.Timestamp): [optional] date to value at, defaults to the curve's trade date.
+        Returns:
+            float
         """
-        self._bond = bond
-
-    def _get_forward_rates(self):
-        reset_dates = self.bond.schedule.schedule["resetDate"]
-        future_resets = reset_dates[reset_dates > self.bond.evaluation_date]
-        df2_dates = pd.DatetimeIndex(business_adjustment("modified_following",
-                                                         future_resets + DateOffset(
-                                                             months=12 / self.bond.schedule.frequency)))
-        df1 = self.discount_curve.discount_factor_at(future_resets)
-        df2 = self.discount_curve.discount_factor_at(df2_dates)
-        af = accrual_factor(self.discount_curve.dcc, list(future_resets), list(df2_dates))
-        match self.discount_curve.compounding:
-            case "simple":
-                self._forward_rates = (df1 / df2 - 1) / af
-            case "continuous":
-                self._forward_rates = np.log(df1 / df2) / af
-            case "annually_compounded":
-                self._forward_rates = (df1 / df2) ** (1 / af) - 1
-
-    def _get_current_coupon(self):
-        reset_dates = self.bond.schedule.schedule["resetDate"]
-        past_mask = reset_dates <= self.bond.evaluation_date
-        if not past_mask.any():
-            raise ValueError("Evaluation date precedes the first reset date: no current coupon exists yet.")
-        reset = reset_dates[past_mask][-1]
-
-        start = self.bond.schedule.schedule["startingDate"][past_mask][-1]
-        end = self.bond.schedule.schedule["paymentDate"][past_mask][-1]
-        af = accrual_factor(self.bond.dcc, start, end).item()
-
-        if self.bond.current_coupon_rate is not None:
-            coupon_rate = self.bond.current_coupon_rate
-            reset_rate = coupon_rate - self.bond.spread
-        else:
-            reset_rate = self.bond.historical_euribor.loc[reset].item()
-            coupon_rate = reset_rate + self.bond.spread
-
-        self._current_coupon = pd.DataFrame([{"resetDate": reset, "couponStart": start, "couponEnd": end,
-                                             "accrualFactor": af, "resetRate": reset_rate, "spread": self.bond.spread,
-                                             "couponRate": coupon_rate,
-                                             "coupon": coupon_rate * af * self.bond.face_amount}])
-
-    def _get_expected_coupons(self):
-
-        if self.bond.cap is not np.nan and self.bond.floor is not np.nan:
-            raise ValueError("'Pricer' can't deal with caps and floor. Set a proper pricer.")
-
-        reset_dates = self.bond.schedule.schedule["resetDate"]
-        resets = reset_dates[reset_dates > self.bond.evaluation_date]
-        starts = self.bond.schedule.schedule["startingDate"][reset_dates > self.bond.evaluation_date]
-        payments = self.bond.schedule.schedule["paymentDate"][reset_dates > self.bond.evaluation_date]
-        af = accrual_factor(self.bond.dcc, starts, payments)
-
-        if self.bond._historical_euribor is not None and len(self.bond.coupons_history) > 0:
-            start_idx = self.bond.coupons_history.index[-1] + 1
-            n_hist = self.bond.coupons_history.shape[0]
-        else:
-            start_idx = 1
-            n_hist = 0
-
-        index = pd.RangeIndex(start_idx, n_hist + len(payments) + 2, name="couponNumber")
-
-        dfs = [self.current_coupon]
-        if len(resets) > 0:
-            dfs.append(pd.DataFrame(
-                {"resetDate": resets, "couponStart": starts, "couponEnd": payments, "accrualFactor": af,
-                "resetRate": self.forward_rates, "spread": self.bond.spread,
-                "couponRate": self.forward_rates + self.bond.spread,
-                "coupon": (self.forward_rates + self.bond.spread) * af * self.bond.face_amount}))
+        if bond.evaluation_date != self.discount_curve.trade_date:
+            raise ValueError(f"The bond is evaluated on {bond.evaluation_date.date()}, the discount curve is built "
+                             f"on {self.discount_curve.trade_date.date()}.")
+        cash_flows = bond.cash_flows
+        df = self.discount_factor_at(bond, cash_flows.paymentDate)
+        survival = None if bond._cds_spread is None else bond.survival_probabilities
+        recovery = None if survival is None else np.broadcast_to(np.asarray(bond.recovery_rate, dtype=float),
+                                                                 survival.shape)
+        if date is not None:
+            after = (cash_flows.paymentDate > date).to_numpy()
+            cash_flows, df = cash_flows[after], df[after] / self.discount_factor_at(bond, [date])[0]
+            if survival is not None:
+                survival, recovery = (survival / bond._survival_at(date))[after], recovery[after]
+        if survival is None:
+            return float(cash_flows.cashFlow.to_numpy() @ df)
+        delta_prob = np.diff(-survival, prepend=-1)
+        coupon_leg = (cash_flows.coupon.to_numpy() * survival) @ df
+        redemption_leg = (cash_flows.redemption.to_numpy() * survival) @ df
+        default_leg = (recovery * delta_prob) @ df * bond.face_amount
+        return float(coupon_leg + redemption_leg + default_leg)
 
 
-        self._expected_coupons = pd.concat(dfs, ignore_index=True).set_index(index).replace(np.nan, "-")
-
-    def present_value(self) -> dict:
-        """
-        Calculate present value of the sum of the expected cash flows.
-        """
-        df = self.discount_curve.discount_factor_at(self.expected_coupons.couponEnd)
-        start, end = self.expected_coupons.couponStart.iloc[0], self.expected_coupons.couponEnd.iloc[0]
-        accrued_interest = self.expected_coupons.coupon.iloc[0] * (self.bond.evaluation_date + BDay(2)
-                                                                   - start).days / (end - start).days
-        expected_coupon_pv = self.expected_coupons.coupon.to_numpy().dot(df)
-        face_value_pv = df[-1] * self.bond.face_amount
-
-        prices = {"riskFreeValue": {"dirtyPrice": (expected_coupon_pv + face_value_pv).item(),
-                                    "accruedInterest": accrued_interest,
-                                    "cleanPrice": (expected_coupon_pv + face_value_pv - accrued_interest).item()}}
-
-        if self.bond._cds_spread:
-            if self.bond.recovery_rate is None:
-                warnings.warn(
-                    "CDS spread detected but could not find recovery rate. Continue with risk free valuation.")
-                return prices
-
-            expected_coupon_pv_on_survival = (self.expected_coupons.coupon.to_numpy() *
-                                              self.bond.survival_probabilities).dot(df)
-            delta_prob = np.diff(-self.bond.survival_probabilities, prepend=-1)
-            expected_coupon_pv_on_default = (self.bond.recovery_rate * delta_prob).dot(df) * self.bond.face_amount
-            face_value_pv_on_survival = self.bond.face_amount * df[-1] * self.bond.survival_probabilities[-1]
-            prices = {**prices,
-                      "riskAdjustedValue":
-                          {"dirtyPrice": (expected_coupon_pv_on_default +
-                                          expected_coupon_pv_on_survival + face_value_pv_on_survival).item(),
-                           "accruedInterest": accrued_interest,
-                           "cleanPrice": (expected_coupon_pv_on_default +
-                                          expected_coupon_pv_on_survival +
-                                          face_value_pv_on_survival - accrued_interest).item()}}
-
-        return prices
-
-
-class BlackPricer(Pricer):
+class BlackCouponPricer:
     """
-    Class to implement the Black model.
+    Caplet and floorlet premiums under the lognormal Black model.
     """
 
-    def __init__(self, discount_curve, volatility_surface):
+    _DCC = "ACT/365"
+
+    def __init__(self, volatility_surface):
         """
         Args:
-            discount_curve (DiscountCurve): DiscountCurve instance
-            volatility_surface (pandas.DataFrame): volatility surface data for the Black model
+            volatility_surface (pandas.DataFrame): volatility surface, maturities on the index
+                                                   and strikes on the columns.
         """
-        super().__init__(discount_curve)
         self.volatility_surface = volatility_surface
-        self._cap_fwd_premiums = None
-        self._floor_fwd_premiums = None
 
     @property
     def volatility_surface(self):
@@ -210,204 +85,128 @@ class BlackPricer(Pricer):
         else:
             raise ValueError("Volatility surface should be a DataFrame.")
 
-    @property
-    def cap_forward_premiums(self):
-        if self._cap_fwd_premiums is None or self.discount_curve.shift_flag:
-            self._get_cap_floor_forward_premiums()
-        return self._cap_fwd_premiums
+    def _unfixed_periods(self, bond, resets, af, rates):
+        """
+        Time to fixing, accrual factor and underlying rate of the periods not yet fixed.
+        Args:
+            bond (FloatingRateBond): bond whose coupons are being priced.
+            resets (numpy.ndarray): fixing dates.
+            af (numpy.ndarray): accrual factors of the coupons.
+            rates (numpy.ndarray): projected index rates.
+        Returns:
+            tuple of numpy.ndarray.
+        """
+        return accrual_factor(self._DCC, bond.evaluation_date, resets), af, rates + bond.spread
 
-    @property
-    def floor_forward_premiums(self):
-        if self._floor_fwd_premiums is None or self.discount_curve.shift_flag:
-            self._get_cap_floor_forward_premiums()
-        return self._floor_fwd_premiums
-
-    def _get_cap_floor_forward_premiums(self):
-        # volatility for cap and floor:
-        maturity = (self.bond.schedule.schedule["paymentDate"][-1] - self.bond.evaluation_date).days / 365
+    def _volatilities(self, bond, cap_strike, floor_strike):
+        maturity = (bond.schedule.schedule["paymentDate"][-1] - bond.evaluation_date).days / 365
         interpolator = scipy.interpolate.RegularGridInterpolator(
             (self.volatility_surface.index, self.volatility_surface.columns), self.volatility_surface.values,
             bounds_error=False, fill_value=None)  # extrapolate values outside bounds
-        cap_vol, floor_vol = interpolator([(maturity, self.bond.cap), (maturity, self.bond.floor)])
+        return interpolator([(maturity, cap_strike), (maturity, floor_strike)])
 
-        # time to maturity and af for each caplet and floorlet:
-        reset_dates = self.bond.schedule.schedule["resetDate"]
-        future_reset_dates = reset_dates[reset_dates > self.bond.evaluation_date]
-        ttm = accrual_factor("ACT/365", self.bond.evaluation_date, future_reset_dates)
-        af = accrual_factor("ACT/365",
-                            self.bond.schedule.schedule["startingDate"][reset_dates > self.bond.evaluation_date],
-                            self.bond.schedule.schedule["paymentDate"][reset_dates > self.bond.evaluation_date])
-
-        # underlying:
-        underlying_rate = self.forward_rates + self.bond.spread
+    def forward_premiums(self, bond, resets, af, rates):
+        """
+        Caplet and floorlet forward premiums, one per period still to be fixed.
+        Args:
+            bond (FloatingRateBond): bond whose coupons are being priced.
+            resets (numpy.ndarray): fixing dates.
+            af (numpy.ndarray): accrual factors of the coupons.
+            rates (numpy.ndarray): projected index rates.
+        Returns:
+            tuple of numpy.ndarray, (caplet, floorlet).
+        """
+        ttm, af, underlying_rate = self._unfixed_periods(bond, resets, af, rates)
+        cap_vol, floor_vol = self._volatilities(bond, bond.cap, bond.floor)
 
         # The lognormal Black model cannot price negative strikes; a strike of
         # exactly 0 is handled below (log→±inf gives the correct degenerate
         # premium: worthless floor, always-in-the-money cap).
-        for name, strike in (("cap", self.bond.cap), ("floor", self.bond.floor)):
+        for name, strike in (("cap", bond.cap), ("floor", bond.floor)):
             if not np.isnan(strike) and strike < 0:
                 raise ValueError(
                     f"Black model requires a non-negative {name} strike; got {strike}. "
-                    "Use BachelierPricer (normal model) for negative strikes."
+                    "Use BachelierCouponPricer (normal model) for negative strikes."
                 )
 
         # d1 and d2 (errstate: log(rate/0) → inf is the intended limit, not an error):
         with np.errstate(divide="ignore"):
-            d1_cap = (np.log(underlying_rate / self.bond.cap) + 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
-            d2_cap = (np.log(underlying_rate / self.bond.cap) - 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
-            d1_floor = (np.log(underlying_rate / self.bond.floor) + 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
-            d2_floor = (np.log(underlying_rate / self.bond.floor) - 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
+            d1_cap = (np.log(underlying_rate / bond.cap) + 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
+            d2_cap = (np.log(underlying_rate / bond.cap) - 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
+            d1_floor = (np.log(underlying_rate / bond.floor) + 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
+            d2_floor = (np.log(underlying_rate / bond.floor) - 0.5 * ttm * floor_vol ** 2) / (floor_vol * ttm ** 0.5)
 
         # N(d1) and N(d2)
         nd1_cap, nd2_cap = norm.cdf(d1_cap), norm.cdf(d2_cap)
         nd1_floor, nd2_floor = norm.cdf(-d1_floor), norm.cdf(-d2_floor)
 
-        self._cap_fwd_premiums = (underlying_rate * nd1_cap - self.bond.cap * nd2_cap) * af * self.bond.face_amount
-        self._floor_fwd_premiums = (self.bond.floor * nd2_floor -
-                                    underlying_rate * nd1_floor) * af * self.bond.face_amount
-
-    def _get_current_coupon(self):
-        reset_dates = self.bond.schedule.schedule["resetDate"]
-        past_mask = reset_dates <= self.bond.evaluation_date
-        if not past_mask.any():
-            raise ValueError("Evaluation date precedes the first reset date: no current coupon exists yet.")
-        reset = reset_dates[past_mask][-1]
-        start = self.bond.schedule.schedule["startingDate"][past_mask][-1]
-        end = self.bond.schedule.schedule["paymentDate"][past_mask][-1]
-        af = accrual_factor(self.bond.dcc, start, end).item()
-
-        if self.bond.current_coupon_rate is not None:
-            coupon_rate = self.bond.current_coupon_rate
-            reset_rate = coupon_rate - self.bond.spread
-        else:
-            reset_rate = self.bond.historical_euribor.loc[reset].item()
-
-        floorlet = np.maximum(self.bond.floor - (reset_rate + self.bond.spread), 0) * af * self.bond.face_amount
-        caplet = np.maximum((reset_rate + self.bond.spread) - self.bond.cap, 0) * af * self.bond.face_amount
-        coupon_rate = reset_rate + self.bond.spread
-        self._current_coupon = pd.DataFrame([
-            {"resetDate": reset, "couponStart": start, "couponEnd": end, "accrualFactor": af, "resetRate": reset_rate,
-             "spread": self.bond.spread, "couponRate": coupon_rate, "floorlet": floorlet, "caplet": -caplet,
-             "coupon": np.nansum([coupon_rate * af * self.bond.face_amount, floorlet, - caplet])}])
-
-    def _get_expected_coupons(self):
-        reset_dates = self.bond.schedule.schedule["resetDate"]
-        resets = reset_dates[reset_dates > self.bond.evaluation_date]
-        starts = self.bond.schedule.schedule["startingDate"][reset_dates > self.bond.evaluation_date]
-        payments = self.bond.schedule.schedule["paymentDate"][reset_dates > self.bond.evaluation_date]
-        af = accrual_factor(self.bond.dcc, starts, payments)
-        coupon_rate = self.forward_rates + self.bond.spread
-
-        if self.bond._historical_euribor is not None and len(self.bond.coupons_history) > 0:
-            start_idx = self.bond.coupons_history.index[-1] + 1
-            n_hist = self.bond.coupons_history.shape[0]
-        else:
-            start_idx = 1
-            n_hist = 0
-        index = pd.RangeIndex(start_idx, n_hist + len(payments) + 2, name="couponNumber")
-
-        dfs = [self.current_coupon]
-        if len(resets) > 0:
-            dfs.append(pd.DataFrame(
-                {"resetDate": resets, "couponStart": starts, "couponEnd": payments, "accrualFactor": af,
-                 "resetRate": self.forward_rates, "spread": self.bond.spread, "couponRate": coupon_rate,
-                 "floorlet": self.floor_forward_premiums, "caplet": -self.cap_forward_premiums,
-                 "coupon": np.nansum([coupon_rate * af * self.bond.face_amount, self.floor_forward_premiums,
-                                      -self.cap_forward_premiums], axis=0)}))
-
-        self._expected_coupons = pd.concat(dfs, ignore_index=True).set_index(index).replace(np.nan, "-")
+        caplet = (underlying_rate * nd1_cap - bond.cap * nd2_cap) * af * bond.face_amount
+        floorlet = (bond.floor * nd2_floor - underlying_rate * nd1_floor) * af * bond.face_amount
+        return caplet, floorlet
 
 
-class BachelierPricer(BlackPricer):
+class BachelierCouponPricer(BlackCouponPricer):
     """
-    Class to implement the Bachelier model.
+    Caplet and floorlet premiums under the normal model.
     """
 
-    def __init__(self, discount_curve, volatility_surface):
-        """
-        Args:
-            discount_curve (DiscountCurve): DiscountCurve instance
-            volatility_surface (pandas.DataFrame): volatility surface data for the Bachelier model
-        """
-        super().__init__(discount_curve, volatility_surface)
-        self.volatility_surface = volatility_surface
-
-    def _get_cap_floor_forward_premiums(self):
-        # volatility for cap and floor:
-        maturity = (self.bond.schedule.schedule["paymentDate"][-1] - self.bond.evaluation_date).days / 365
-        interpolator = scipy.interpolate.RegularGridInterpolator(
-            (self.volatility_surface.index, self.volatility_surface.columns), self.volatility_surface.values,
-            bounds_error=False, fill_value=None)  # extrapolate values outside bounds
-        cap_vol, floor_vol = interpolator([(maturity, self.bond.cap), (maturity, self.bond.floor)])
-
-        # time to maturity and accrual factor for each caplet and floorlet:
-        reset_dates = self.bond.schedule.schedule["resetDate"]
-        future_reset_dates = reset_dates[reset_dates > self.bond.evaluation_date]
-        ttm = accrual_factor("ACT/365", self.bond.evaluation_date, future_reset_dates)
-        af = accrual_factor("ACT/365",
-                            self.bond.schedule.schedule["startingDate"][reset_dates > self.bond.evaluation_date],
-                            self.bond.schedule.schedule["paymentDate"][reset_dates > self.bond.evaluation_date])
-        # underlying:
-        underlying_rate = self.forward_rates + self.bond.spread
+    def forward_premiums(self, bond, resets, af, rates):
+        ttm, af, underlying_rate = self._unfixed_periods(bond, resets, af, rates)
+        cap_vol, floor_vol = self._volatilities(bond, bond.cap, bond.floor)
 
         # d1 and d2:
-        d1_cap = (underlying_rate - self.bond.cap) / (cap_vol * ttm ** 0.5)
-        d1_floor = (underlying_rate - self.bond.floor) / (floor_vol * ttm ** 0.5)
+        d1_cap = (underlying_rate - bond.cap) / (cap_vol * ttm ** 0.5)
+        d1_floor = (underlying_rate - bond.floor) / (floor_vol * ttm ** 0.5)
 
         # N(d1) and N(d2)
         nd1_cap, small_nd1_cap = norm.cdf(d1_cap), norm.pdf(d1_cap)
         nd1_floor, small_nd1_floor = norm.cdf(-d1_floor), norm.pdf(d1_floor)
 
-        self._cap_fwd_premiums = ((underlying_rate - self.bond.cap) * nd1_cap +
-                                  cap_vol * small_nd1_cap * ttm ** 0.5) * af * self.bond.face_amount
-        self._floor_fwd_premiums = ((self.bond.floor - underlying_rate) * nd1_floor +
-                                    floor_vol * small_nd1_floor * ttm ** 0.5) * af * self.bond.face_amount
+        caplet = ((underlying_rate - bond.cap) * nd1_cap +
+                  cap_vol * small_nd1_cap * ttm ** 0.5) * af * bond.face_amount
+        floorlet = ((bond.floor - underlying_rate) * nd1_floor +
+                    floor_vol * small_nd1_floor * ttm ** 0.5) * af * bond.face_amount
+        return caplet, floorlet
 
 
-class DisplacedBlackPricer(BlackPricer):
+class DisplacedBlackCouponPricer(BlackCouponPricer):
     """
-    Class to implement the shifted Black model.
+    Caplet and floorlet premiums under the shifted lognormal model.
     """
 
-    def __init__(self, discount_curve, volatility_surface, shift=0.03):
+    def __init__(self, volatility_surface, shift=0.03):
         """
         Args:
-            discount_curve (DiscountCurve): DiscountCurve instance
-            volatility_surface (pandas.DataFrame): volatility surface data for the displaced-Black model
+            volatility_surface (pandas.DataFrame): volatility surface for the displaced-Black model
             shift (float): displacement size (default 3%)
         """
-        super().__init__(discount_curve, volatility_surface)
+        super().__init__(volatility_surface)
         self.shift = shift
 
-    def _get_cap_floor_forward_premiums(self):
-        cap_strike = self.shift + self.bond.cap
-        floor_strike = self.shift + self.bond.floor
-        # volatility for cap and floor:
-        maturity = (self.bond.schedule.schedule["paymentDate"][-1] - self.bond.evaluation_date).days / 365
-        interpolator = scipy.interpolate.RegularGridInterpolator(
-            (self.volatility_surface.index, self.volatility_surface.columns), self.volatility_surface.values,
-            bounds_error=False, fill_value=None)  # extrapolate values outside bounds
-        cap_vol, floor_vol = interpolator([(maturity, cap_strike), (maturity, floor_strike)])
+    def forward_premiums(self, bond, resets, af, rates):
+        """
+         Caplet and floorlet forward premiums, one per period still to be fixed.
+         Args:
+             bond (FloatingRateBond): bond whose coupons are being priced.
+             resets (numpy.ndarray): fixing dates.
+             af (numpy.ndarray): accrual factors of the coupons.
+             rates (numpy.ndarray): projected index rates.
+         Returns:
+             tuple of numpy.ndarray, (caplet, floorlet).
+         """
+        cap_strike = self.shift + bond.cap
+        floor_strike = self.shift + bond.floor
+        ttm, af, underlying_rate = self._unfixed_periods(bond, resets, af, rates)
+        underlying_rate = underlying_rate + self.shift
+        cap_vol, floor_vol = self._volatilities(bond, cap_strike, floor_strike)
 
-        # time to maturity and accrual factor for each caplet and floorlet:
-        reset_dates = self.bond.schedule.schedule["resetDate"]
-        future_reset_dates = reset_dates[reset_dates > self.bond.evaluation_date]
-        ttm = accrual_factor("ACT/365", self.bond.evaluation_date, future_reset_dates)
-        af = accrual_factor("ACT/365",
-                            self.bond.schedule.schedule["startingDate"][reset_dates > self.bond.evaluation_date],
-                            self.bond.schedule.schedule["paymentDate"][reset_dates > self.bond.evaluation_date])
-        # underlying:
-        underlying_rate = self.forward_rates + self.bond.spread + self.shift
-
-        # After displacement the strikes must be non-negative for the lognormal model.
         for name, strike in (("shifted cap", cap_strike), ("shifted floor", floor_strike)):
             if not np.isnan(strike) and strike < 0:
                 raise ValueError(
                     f"Displaced-Black requires a non-negative {name} strike; got {strike}. "
-                    "Increase the displacement or use BachelierPricer."
+                    "Increase the displacement or use BachelierCouponPricer."
                 )
 
-        # d1 and d2 (errstate: log(rate/0) → inf is the intended limit, not an error):
         with np.errstate(divide="ignore"):
             d1_cap = (np.log(underlying_rate / cap_strike) + 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
             d2_cap = (np.log(underlying_rate / cap_strike) - 0.5 * ttm * cap_vol ** 2) / (cap_vol * ttm ** 0.5)
@@ -418,5 +217,6 @@ class DisplacedBlackPricer(BlackPricer):
         nd1_cap, nd2_cap = norm.cdf(d1_cap), norm.cdf(d2_cap)
         nd1_floor, nd2_floor = norm.cdf(-d1_floor), norm.cdf(-d2_floor)
 
-        self._cap_fwd_premiums = (underlying_rate * nd1_cap - cap_strike * nd2_cap) * af * self.bond.face_amount
-        self._floor_fwd_premiums = (floor_strike * nd2_floor - underlying_rate * nd1_floor) * af * self.bond.face_amount
+        caplet = (underlying_rate * nd1_cap - cap_strike * nd2_cap) * af * bond.face_amount
+        floorlet = (floor_strike * nd2_floor - underlying_rate * nd1_floor) * af * bond.face_amount
+        return caplet, floorlet
